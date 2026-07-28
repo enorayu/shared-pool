@@ -1079,6 +1079,14 @@ def price_export():
 # Comprehensive Stats
 # ════════════════════════════════════════════════════════════
 
+@app.route("/api/admin/clear-cache", methods=["POST"])
+def admin_clear_cache():
+    """Clear all in-memory caches (stats, unique domains, config)."""
+    global _cache, CONFIG_CACHE
+    _cache.clear()
+    CONFIG_CACHE.clear()
+    return jsonify({"status": "ok", "message": "All caches cleared"})
+
 @app.route("/api/stats", methods=["GET"])
 def get_stats():
     """Aggregated statistics (cached 30s). Each count() already retries on SSL errors."""
