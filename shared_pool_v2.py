@@ -581,35 +581,46 @@ EMAIL_STATUSES = ["New", "Unsent", "Assigned", "Sent", "Bounce"]
 @app.route("/api/email/queue", methods=["GET"])
 def email_queue():
     """
-    Get domains ready for email sending (have contact_email, status New/Claimed).
-    Each domain is one email task.
+    Get UNSENT emails ready for sending.
+    Only collection_status=New/Claimed, deduplicated by normalized contact_email.
+    Excludes contacted (sent), replied, bounced, and blacklisted.
     """
     user = request.args.get("user", "")
     count = min(int(request.args.get("count", 100)), 2000)
 
-    filters = {}
-    if user:
-        filters["claimed_by"] = user
+    # Only unsent: New or Claimed
+    filters = {"collection_status": "in.(New,Claimed)"}
 
     domains = db.select(
         "domain_pool",
-        select="domain_id,domain,contact_email,collection_status,claimed_by,maisui_task_id,created_at",
+        select="domain_id,domain,contact_email,collection_status,claimed_by,source,created_at",
         filters=filters,
-        limit=count,
+        limit=count * 3,  # fetch extra to account for dedup
         order="created_at",
         ascending=True,
     )
 
-    # Filter to only those with contact_email
-    result = [d for d in domains if d.get("contact_email")]
+    # Dedup by normalized email, must have contact_email
+    seen = set()
+    result = []
+    for d in domains:
+        email = (d.get("contact_email") or "").strip().lower()
+        if email and email not in seen:
+            seen.add(email)
+            d["send_status"] = "UNSENT"
+            result.append(d)
+    result = result[:count]
+
     return jsonify({"emails": result, "count": len(result)})
 
 
 @app.route("/api/email/export", methods=["POST"])
 def email_export():
     """
-    Export email send queue for a user.
-    Marks domains as 'Contacted' (email sent).
+    Export UNSENT emails for sending. Only collection_status=New/Claimed.
+    Excludes contacted (sent), replied, bounced, and blacklisted.
+    Deduplicates by normalized contact_email — same email exported only once.
+    Mark exported records as 'Contacted' after successful export.
     """
     data = request.get_json(force=True)
     user = data.get("user", "").strip()
@@ -617,31 +628,46 @@ def email_export():
         return jsonify({"error": "user is required", "exported": 0}), 400
     count = min(int(data.get("count", 500)), 5000)
 
-    filters = {"claimed_by": user}
+    # Only unsent: New or Claimed (exclude Contacted=already-sent, Replied, bounced, blacklist)
+    filters = {"collection_status": "in.(New,Claimed)"}
+
     domains = db.select(
         "domain_pool",
-        select="domain_id,domain,contact_email,maisui_task_id",
+        select="domain_id,domain,contact_email,collection_status,source",
         filters=filters,
-        limit=count,
+        limit=count * 3,  # fetch extra to account for no-email and dedup
         order="created_at",
         ascending=True,
     )
 
-    domains = [d for d in domains if d.get("contact_email")]
-    if not domains:
+    # Filter: must have contact_email, dedup by normalized email
+    seen = set()
+    emails = []
+    for d in domains:
+        email = (d.get("contact_email") or "").strip().lower()
+        if email and email not in seen:
+            seen.add(email)
+            emails.append(d)
+    emails = emails[:count]
+
+    if not emails:
         return jsonify({"exported": 0, "filename": ""})
 
     batch_id = f"email_send_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{user}"
     filename = f"{batch_id}.csv"
 
-    # Generate CSV
+    # Generate CSV — new columns matching Maisui sender expectations
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["domain_id", "domain", "contact_email", "maisui_task_id"])
-    for d in domains:
-        writer.writerow([d["domain_id"], d["domain"],
-                         safe_str(d.get("contact_email")),
-                         safe_str(d.get("maisui_task_id"))])
+    writer.writerow(["email_id", "email", "domain", "send_status", "source"])
+    for e in emails:
+        writer.writerow([
+            e["domain_id"],
+            safe_str(e.get("contact_email")),
+            e["domain"],
+            "UNSENT",
+            safe_str(e.get("source")),
+        ])
 
     csv_content = output.getvalue()
     export_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shared_pool_exports")
@@ -649,18 +675,18 @@ def email_export():
     with open(os.path.join(export_dir, filename), "w", newline="", encoding="utf-8") as f:
         f.write(csv_content)
 
-    # Mark as Contacted
-    ids = [d["domain_id"] for d in domains]
+    # Mark as Contacted (sent) — prevents re-export
+    ids = [e["domain_id"] for e in emails]
     db.patch_by_ids("domain_pool", {
         "collection_status": "Contacted",
         "updated_at": now_iso(),
     }, ids)
 
     # Log operation
-    _log_operation("email_export", user, "email_pool", len(domains),
+    _log_operation("email_export", user, "email_pool", len(emails),
                    f"Batch: {batch_id}")
 
-    return jsonify({"exported": len(domains), "filename": filename, "batch_id": batch_id, "csv_content": csv_content})
+    return jsonify({"exported": len(emails), "filename": filename, "batch_id": batch_id, "csv_content": csv_content})
 
 
 @app.route("/api/email/stats", methods=["GET"])
@@ -1390,7 +1416,7 @@ tr:last-child td{border-bottom:none}
       <span id="email-import-result" style="font-size:12px;color:var(--muted)"></span>
     </div>
   </div>
-  <table id="email-table"><tr><th>Email</th><th>Domain</th><th>Status</th><th>Claimed By</th><th>Created</th></tr></table>
+  <table id="email-table"><tr><th>Email</th><th>Domain</th><th>Send Status</th><th>Claimed By</th><th>Source</th><th>Created</th></tr></table>
 </div>
 
 <!-- Reply Pool -->
@@ -1552,12 +1578,13 @@ async function loadDomainTable(){
 async function loadEmailTable(){
   const u=getUserName()||'';
   const r=await fetch(API+'/api/email/queue?user='+encodeURIComponent(u)+'&count=50').then(r=>r.json());
-  document.getElementById('email-table').innerHTML='<tr><th>Email</th><th>Domain</th><th>Status</th><th>Claimed By</th><th>Created</th></tr>'+
+  document.getElementById('email-table').innerHTML='<tr><th>Email</th><th>Domain</th><th>Send Status</th><th>Claimed By</th><th>Source</th><th>Created</th></tr>'+
     (r.emails||[]).map(e=>`<tr>
       <td>${esc(e.contact_email)}</td>
       <td>${esc(e.domain)}</td>
-      <td><span class="status-${e.collection_status||'New'}">${e.collection_status||'New'}</span></td>
+      <td><span class="status-${e.send_status||'UNSENT'}">${e.send_status||'UNSENT'}</span></td>
       <td>${esc(e.claimed_by)}</td>
+      <td>${esc(e.source)}</td>
       <td>${(e.created_at||'').slice(0,16)}</td>
     </tr>`).join('');
 }
