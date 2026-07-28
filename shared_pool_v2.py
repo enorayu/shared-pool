@@ -70,6 +70,46 @@ def _cached(key, ttl_sec=30, fn=None):
         return val
     return None
 
+
+def _count_unique_domains(status=None):
+    """Count unique domain names (deduplicated) by paginated fetch.
+    Cached 60s since it scans all rows.
+    When status=None, returns a dict of all status counts in one pass."""
+    def _do_count():
+        seen = {}  # status -> set of unique domains
+        if status:
+            seen[status] = set()
+        offset = 0
+        batch_size = 5000
+        while True:
+            batch = db.select("domain_pool", select="domain,collection_status",
+                              limit=batch_size, offset=offset,
+                              order="domain_id")
+            if not batch:
+                break
+            for row in batch:
+                dom = (row.get("domain") or "").strip().lower()
+                st = row.get("collection_status", "")
+                if not dom:
+                    continue
+                if status:
+                    if st == status:
+                        seen[status].add(dom)
+                else:
+                    if st not in seen:
+                        seen[st] = set()
+                    seen[st].add(dom)
+            if len(batch) < batch_size:
+                break
+            offset += batch_size
+
+        if status:
+            return len(seen.get(status, set()))
+        else:
+            return {k: len(v) for k, v in seen.items()}
+    cache_key = f"unique_domains:{status or 'all'}"
+    return _cached(cache_key, ttl_sec=60, fn=_do_count)
+
 # ── Supabase Client ─────────────────────────────────────────
 
 class SB:
@@ -398,8 +438,9 @@ def domain_list():
 
     total_filters = {k: v for k, v in {"collection_status": status, "claimed_by": user}.items() if v}
     total = db.count("domain_pool", filters=total_filters if total_filters else None)
+    unique_total = _count_unique_domains(status if status else None)
 
-    return jsonify({"domains": unique_domains, "total": total})
+    return jsonify({"domains": unique_domains, "total": total, "unique_total": unique_total})
 
 
 @app.route("/api/domain/export", methods=["POST"])
@@ -1045,6 +1086,14 @@ def get_stats():
         domain_contacted = db.count("domain_pool", filters={"collection_status": "Contacted"})
         domain_replied = db.count("domain_pool", filters={"collection_status": "Replied"})
 
+        # Unique domain counts — single pass over all domains
+        unique_counts = _count_unique_domains()  # returns {status: count}
+        domain_unique_total = sum(unique_counts.values())
+        domain_unique_new = unique_counts.get("New", 0)
+        domain_unique_claimed = unique_counts.get("Claimed", 0)
+        domain_unique_contacted = unique_counts.get("Contacted", 0)
+        domain_unique_replied = unique_counts.get("Replied", 0)
+
         reply_total = reply_a = reply_b = reply_c = reply_unread = 0
         try:
             reply_total = db.count("reply_pool")
@@ -1083,6 +1132,11 @@ def get_stats():
             "domain_imported": 0,
             "domain_completed": domain_contacted,
             "domain_exported": domain_replied,
+            "domain_unique_total": domain_unique_total,
+            "domain_unique_new": domain_unique_new,
+            "domain_unique_claimed": domain_unique_claimed,
+            "domain_unique_contacted": domain_unique_contacted,
+            "domain_unique_replied": domain_unique_replied,
             "domain_today_new": 0,
             "email_total": domain_total,
             "email_unsent": domain_new + domain_claimed,
@@ -1551,9 +1605,9 @@ async function loadStats(){
   try{
     const s=await fetch(API+'/api/stats').then(r=>r.json());
     document.getElementById('domain-cards').innerHTML=[
-      {l:'Total',v:s.domain_total,c:'blue'},{l:'New',v:s.domain_new,c:'amber'},
-      {l:'Claimed',v:s.domain_claimed,c:'purple'},{l:'Contacted',v:s.domain_completed,c:'teal'},
-      {l:'Replied',v:s.domain_exported,c:'green'},
+      {l:'Unique Domains',v:s.domain_unique_total,c:'blue'},{l:'New',v:s.domain_unique_new,c:'amber'},
+      {l:'Claimed',v:s.domain_unique_claimed,c:'purple'},{l:'Contacted',v:s.domain_unique_contacted,c:'teal'},
+      {l:'Replied',v:s.domain_unique_replied,c:'green'},
     ].map(c=>`<div class="card"><div class="label">${c.l}</div><div class="value ${c.c}">${fmt(c.v)}</div></div>`).join('');
     document.getElementById('email-cards').innerHTML=[
       {l:'Total Domains',v:s.email_total,c:'blue'},{l:'Unsent',v:s.email_unsent,c:'amber'},
