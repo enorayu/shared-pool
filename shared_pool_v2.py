@@ -1458,11 +1458,17 @@ tr:last-child td{border-bottom:none}
   <div id="import-panel" style="display:none;margin-bottom:16px;padding:14px;background:var(--card);border:0.5px solid var(--border);border-radius:10px">
     <div style="font-size:13px;font-weight:500;margin-bottom:8px">Import Domains</div>
     <textarea id="import-text" rows="5" placeholder="Paste domains, one per line&#10;example.com&#10;site.org&#10;..." style="width:100%;padding:8px;font-size:12px;border:0.5px solid var(--border);border-radius:6px;resize:vertical"></textarea>
-    <div style="margin-top:8px;display:flex;align-items:center;gap:8px">
+    <div style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
       <select id="import-status" style="padding:5px 10px;font-size:12px;border:0.5px solid var(--border);border-radius:6px">
         <option value="New">Status: New</option>
       </select>
       <button class="btn green" onclick="importDomains()">Submit Import</button>
+      <span style="color:var(--muted);font-size:12px">or</span>
+      <label style="cursor:pointer">
+        <input type="file" id="import-csv-file" accept=".csv" style="display:none" onchange="handleCsvUpload(this)">
+        <span class="btn" style="display:inline-block">Upload CSV</span>
+      </label>
+      <button class="btn" style="font-size:11px" onclick="downloadCsvTemplate()">Download Template</button>
       <span id="import-result" style="font-size:12px;color:var(--muted)"></span>
     </div>
   </div>
@@ -1583,6 +1589,42 @@ async function importDomains(){
   }catch(e){
     document.getElementById('import-result').textContent='Error: '+e.message;
   }
+}
+
+// ── CSV Upload & Template ──
+function handleCsvUpload(input){
+  const file=input.files[0];
+  if(!file)return;
+  const reader=new FileReader();
+  reader.onload=function(e){
+    const text=e.target.result;
+    const lines=text.split(/\r?\n/);
+    const domains=[];
+    for(const line of lines){
+      const cells=line.split(',');
+      for(const cell of cells){
+        const d=cell.trim().toLowerCase();
+        if(d && d.includes('.')) domains.push(d);
+      }
+    }
+    if(!domains.length){alert('No valid domains found in CSV');input.value='';return;}
+    document.getElementById('import-text').value=domains.join('\n');
+    document.getElementById('import-result').textContent='CSV loaded: '+domains.length+' domains ready. Click Submit Import.';
+    input.value='';
+  };
+  reader.readAsText(file);
+}
+function downloadCsvTemplate(){
+  const csv='domain\nexample.com\nsite.org\ncompany.net\n';
+  const blob=new Blob([csv],{type:'text/csv'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url;
+  a.download='domain_import_template.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 // ── Team management ──
