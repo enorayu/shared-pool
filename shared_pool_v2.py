@@ -108,7 +108,7 @@ def _count_unique_domains(status=None):
         else:
             return {k: len(v) for k, v in seen.items()}
     cache_key = f"unique_domains:{status or 'all'}"
-    return _cached(cache_key, ttl_sec=600, fn=_do_count)
+    return _cached(cache_key, ttl_sec=60, fn=_do_count)
 
 # ── Supabase Client ─────────────────────────────────────────
 
@@ -348,7 +348,7 @@ DOMAIN_STATUSES = ["New", "Claimed", "Contacted", "Replied", "Imported", "Collec
 
 @app.route("/api/domain/register", methods=["POST"])
 def domain_register():
-    """Batch register domains. Auto-dedup on domain name.
+    """Batch register domains. Dedup against existing DB first.
     Body: {"domains": ["a.com","b.com"], "priority": 0,
            "collection_status": "New", "notes": "", "imported_by": "emma"}
     If collection_status is omitted, defaults to "New".
@@ -368,32 +368,58 @@ def domain_register():
         else:
             notes = f"[imported by {imported_by}]"
 
-    rows = []
-    new_count, dup_count = 0, 0
+    # 1. Normalize & dedup within batch
+    seen = {}
     for raw in raw_domains:
         d = raw.lower().strip().lstrip("www.")
         if not d:
             continue
-        rows.append({
-            "domain": d,
-            "source": "未提取",
-            "priority": priority,
-            "notes": notes,
-            "collection_status": default_status,
-        })
-
-    if not rows:
+        if d not in seen:
+            seen[d] = {
+                "domain": d,
+                "source": "未提取",
+                "priority": priority,
+                "notes": notes,
+                "collection_status": default_status,
+            }
+    if not seen:
         return jsonify({"new": 0, "duplicates": 0, "domains": []})
 
+    # 2. Batch check against existing domains (100 per query)
+    domain_list = list(seen.keys())
+    existing = set()
+    for i in range(0, len(domain_list), 100):
+        batch = domain_list[i:i+100]
+        d_filter = ",".join(batch)
+        try:
+            results = db.select("domain_pool", select="domain",
+                              filters={"domain": f"in.({d_filter})"}, limit=100)
+            for r in (results or []):
+                existing.add((r.get("domain") or "").strip().lower())
+        except Exception:
+            pass  # if check fails, treat as new (best-effort dedup)
+
+    # 3. Filter out existing
+    new_domains = {d: v for d, v in seen.items() if d not in existing}
+    dup_count = len(seen) - len(new_domains)
+
+    if not new_domains:
+        _log_operation("domain_import", imported_by, "domain_pool", 0,
+                       f"All {dup_count} domains already exist, Source: 未提取")
+        return jsonify({"new": 0, "duplicates": dup_count})
+
+    # 4. Insert only new domains
+    rows = list(new_domains.values())
     resp, result = db.insert("domain_pool", rows, upsert=False)
+    new_count = 0
     if hasattr(resp, "status") and resp.status in (200, 201):
         new_count = len(result) if isinstance(result, list) else len(rows)
-    else:
-        # Some might be duplicates; count successes
-        new_count = len(result) if isinstance(result, list) else 0
-        dup_count = len(rows) - new_count
 
-    # 4. Log operation
+    # 5. Clear cache so stats refresh immediately
+    global _cache
+    _cache.clear()
+
+    # 6. Log operation
     _log_operation("domain_import", imported_by, "domain_pool", new_count,
                    f"Source: 未提取, Duplicates: {dup_count}")
 
@@ -508,7 +534,9 @@ def domain_export():
     with open(os.path.join(export_dir, filename), "w", newline="", encoding="utf-8") as f:
         f.write(csv_content)
 
-    # 5. Log operation
+    # 5. Clear cache & log operation
+    global _cache
+    _cache.clear()
     _log_operation("domain_export", user, "domain_pool", len(unique_domains),
                    f"Batch: {batch_id}, Status: Claimed, Source: 已提取")
 
@@ -571,7 +599,9 @@ def domain_distribute():
         }, {"domain_id": d["domain_id"]})
         distribution[user] += 1
 
-    # Log operation
+    # Clear cache & log operation
+    global _cache
+    _cache.clear()
     _log_operation("domain_distribute", "system", "domain_pool", len(domains),
                    f"Distribution: {json.dumps(distribution)}, Source: 已提取")
 
@@ -740,7 +770,9 @@ def email_export():
         "updated_at": now,
     }, ids)
 
-    # Log operation
+    # Clear cache & log operation
+    global _cache
+    _cache.clear()
     _log_operation("email_export", user, "email_pool", len(emails),
                    f"Batch: {batch_id}, Source: 已提取")
 
@@ -810,6 +842,8 @@ def email_pool_import():
         })
         imported += 1
 
+    global _cache
+    _cache.clear()
     _log_operation("email_import", imported_by, "email_pool", imported,
                    f"Imported: {imported}, Skipped(dup): {skipped}")
 
