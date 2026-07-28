@@ -349,13 +349,12 @@ DOMAIN_STATUSES = ["New", "Claimed", "Contacted", "Replied", "Imported", "Collec
 @app.route("/api/domain/register", methods=["POST"])
 def domain_register():
     """Batch register domains. Auto-dedup on domain name.
-    Body: {"domains": ["a.com","b.com"], "source": "api", "priority": 0,
+    Body: {"domains": ["a.com","b.com"], "priority": 0,
            "collection_status": "New", "notes": "", "imported_by": "emma"}
     If collection_status is omitted, defaults to "New".
-    imported_by tags who imported these domains — stored in source field as "dashboard:{name}"."""
+    All imported domains are marked with source="未提取" for extraction tracking."""
     data = request.get_json(force=True)
     raw_domains = data.get("domains", [])
-    source = data.get("source", "api")
     imported_by = data.get("imported_by", "")
     priority = data.get("priority", 0)
     notes = data.get("notes", "")
@@ -363,9 +362,7 @@ def domain_register():
     if default_status not in DOMAIN_STATUSES:
         default_status = "New"
 
-    # Build source tag: if imported_by is set, prefix with "dashboard:"
     if imported_by:
-        source = f"dashboard:{imported_by}"
         if notes:
             notes = f"[imported by {imported_by}] {notes}"
         else:
@@ -379,7 +376,7 @@ def domain_register():
             continue
         rows.append({
             "domain": d,
-            "source": source,
+            "source": "未提取",
             "priority": priority,
             "notes": notes,
             "collection_status": default_status,
@@ -398,7 +395,7 @@ def domain_register():
 
     # 4. Log operation
     _log_operation("domain_import", imported_by, "domain_pool", new_count,
-                   f"Source: {source}, Duplicates: {dup_count}")
+                   f"Source: 未提取, Duplicates: {dup_count}")
 
     return jsonify({"new": new_count, "duplicates": dup_count})
 
@@ -448,6 +445,8 @@ def domain_export():
     """
     Export unclaimed domains for a user and lock them.
     Deduplicates by domain name. Generates CSV with domain fields only (no email).
+    Only exports domains with collection_status=New, marks them as extracted after export.
+    Exported in ascending domain_id order.
     """
     data = request.get_json(force=True)
     user = data.get("user", "").strip()
@@ -455,17 +454,17 @@ def domain_export():
         return jsonify({"error": "user is required", "exported": 0}), 400
     count = min(int(data.get("count", 200)), 5000)
 
-    # 1. Fetch unclaimed domains
+    # 1. Fetch unclaimed domains (New status, ordered by domain_id ascending)
     domains = db.select(
         "domain_pool",
         select="domain_id,domain,source,priority,created_at",
         filters={"collection_status": "New"},
         limit=count * 3,  # fetch extra for dedup
-        order="priority",
-        ascending=False,
+        order="domain_id",
+        ascending=True,
     )
 
-    # Deduplicate by domain name (keep highest priority)
+    # Deduplicate by domain name (keep first occurrence, lowest ID first)
     seen = set()
     unique_domains = []
     for d in domains:
@@ -483,10 +482,11 @@ def domain_export():
     now = now_iso()
     ids = [d["domain_id"] for d in unique_domains]
 
-    # 2. Lock domains
+    # 2. Lock domains and mark as extracted
     db.patch_by_ids("domain_pool", {
         "claimed_by": user,
         "collection_status": "Claimed",
+        "source": "已提取",
         "claim_batch_id": batch_id,
         "claim_time": now,
     }, ids)
@@ -510,7 +510,7 @@ def domain_export():
 
     # 5. Log operation
     _log_operation("domain_export", user, "domain_pool", len(unique_domains),
-                   f"Batch: {batch_id}, Status: Claimed")
+                   f"Batch: {batch_id}, Status: Claimed, Source: 已提取")
 
     return jsonify({
         "exported": len(unique_domains),
@@ -527,6 +527,7 @@ def domain_distribute():
     Round-robin distribute unclaimed domains among team members.
     Body: {"count": 1000}  (users come from config or default)
     Uses config key "team_members" for user list. Falls back to ["leo","emma","jack"].
+    Domains are ordered by domain_id ascending and marked as extracted after distribution.
     """
     data = request.get_json(force=True)
 
@@ -553,8 +554,8 @@ def domain_distribute():
         select="domain_id",
         filters={"collection_status": "New"},
         limit=count,
-        order="priority",
-        ascending=False,
+        order="domain_id",
+        ascending=True,
     )
 
     now = now_iso()
@@ -564,6 +565,7 @@ def domain_distribute():
         db.update("domain_pool", {
             "claimed_by": user,
             "collection_status": "Claimed",
+            "source": "已提取",
             "claim_time": now,
             "claim_batch_id": f"distribute_{now[:10]}_{user}",
         }, {"domain_id": d["domain_id"]})
@@ -571,7 +573,7 @@ def domain_distribute():
 
     # Log operation
     _log_operation("domain_distribute", "system", "domain_pool", len(domains),
-                   f"Distribution: {json.dumps(distribution)}")
+                   f"Distribution: {json.dumps(distribution)}, Source: 已提取")
 
     return jsonify({"assigned": len(domains), "distribution": distribution})
 
@@ -764,6 +766,7 @@ def email_pool_import():
     Batch import emails from Maisui collection results.
     Body: {"emails": [{"email":"a@b.com","domain":"b.com"},...], "imported_by": "leo"}
     Updates existing domains with contact_email, or creates new domain entries.
+    Marks source as "未提取" and collection_status as "New" so they can be picked up by email export.
     """
     data = request.get_json(force=True)
     records = data.get("emails", [])
@@ -791,7 +794,8 @@ def email_pool_import():
             db.update("domain_pool", {
                 "contact_email": email,
                 "updated_at": now_iso(),
-                "collection_status": "Contacted",
+                "collection_status": "New",
+                "source": "未提取",
                 "notes": f"[email imported by {imported_by}]",
             }, {"domain_id": existing[0]["domain_id"]})
             updated += 1
@@ -799,7 +803,7 @@ def email_pool_import():
             db.insert("domain_pool", {
                 "domain": domain,
                 "contact_email": email,
-                "source": f"email_import:{imported_by}",
+                "source": "未提取",
                 "collection_status": "New",
                 "notes": f"[email imported by {imported_by}]",
                 "priority": 0,
@@ -1238,26 +1242,28 @@ def config_team():
 
 @app.route("/api/domain/import_log", methods=["GET"])
 def domain_import_log():
-    """Recent import records (domains with source starting with 'dashboard:')."""
+    """Recent import records (domains with notes containing 'imported by')."""
     limit = min(int(request.args.get("limit", 50)), 500)
     domains = db.select(
         "domain_pool",
         select="domain_id,domain,source,notes,created_at",
-        filters={"source": "like.dashboard:*"},
+        filters={"notes": "like.[imported by%]"},
         limit=limit,
         order="created_at",
         ascending=False,
     )
-    # Parse imported_by from source field (format: "dashboard:username")
+    # Parse imported_by from notes field
     result = []
     for d in (domains or []):
-        src = d.get("source", "")
-        imported_by = src.split(":", 1)[1] if ":" in src else ""
+        notes = d.get("notes", "")
+        imported_by = ""
+        if "[imported by " in notes:
+            imported_by = notes.split("[imported by ")[1].split("]")[0]
         result.append({
             "domain_id": d.get("domain_id"),
             "domain": d.get("domain"),
             "imported_by": imported_by,
-            "notes": d.get("notes", ""),
+            "notes": notes,
             "imported_at": d.get("created_at", ""),
         })
     return jsonify({"imports": result, "count": len(result)})
@@ -1446,7 +1452,7 @@ tr:last-child td{border-bottom:none}
     <textarea id="import-text" rows="5" placeholder="Paste domains, one per line&#10;example.com&#10;site.org&#10;..." style="width:100%;padding:8px;font-size:12px;border:0.5px solid var(--border);border-radius:6px;resize:vertical"></textarea>
     <div style="margin-top:8px;display:flex;align-items:center;gap:8px">
       <select id="import-status" style="padding:5px 10px;font-size:12px;border:0.5px solid var(--border);border-radius:6px">
-        <option value="New">Status: New</option><option value="Imported">Status: Imported</option><option value="Collecting">Status: Collecting</option>
+        <option value="New">Status: New</option>
       </select>
       <button class="btn green" onclick="importDomains()">Submit Import</button>
       <span id="import-result" style="font-size:12px;color:var(--muted)"></span>
@@ -1506,9 +1512,12 @@ tr:last-child td{border-bottom:none}
 
 <!-- Operation Log -->
 <div class="page" id="page-log">
+  <div class="cards" id="log-cards"></div>
   <div class="actions">
     <button class="btn" onclick="loadLogTable('')">All</button>
-    <button class="btn green" onclick="loadLogTable('domain_import')">Domain Import</button>
+    <button class="btn green" onclick="loadLogTable('domain')">Domain Pool</button>
+    <button class="btn amber" onclick="loadLogTable('email')">Email Pool</button>
+    <button class="btn" onclick="loadLogTable('domain_import')">Domain Import</button>
     <button class="btn" onclick="loadLogTable('domain_export')">Domain Export</button>
     <button class="btn amber" onclick="loadLogTable('email_import')">Email Import</button>
     <button class="btn purple" onclick="loadLogTable('email_export')">Email Export</button>
@@ -1631,7 +1640,7 @@ async function loadDomainTable(){
   document.getElementById('domain-table').innerHTML='<tr><th>Domain</th><th>Source</th><th>Status</th><th>Claimed By</th><th>Priority</th><th>Created</th></tr>'+
     (r.domains||[]).map(d=>`<tr>
       <td>${esc(d.domain)}</td>
-      <td>${esc(d.source)}</td>
+      <td>${d.source==='已提取'?'已提取':'未提取'}</td>
       <td><span class="status-${d.collection_status||'New'}">${d.collection_status||'New'}</span></td>
       <td>${esc(d.claimed_by)}</td>
       <td>${d.priority||0}</td>
@@ -1648,7 +1657,7 @@ async function loadEmailTable(){
       <td>${esc(e.domain)}</td>
       <td><span class="status-${e.send_status||'UNSENT'}">${e.send_status||'UNSENT'}</span></td>
       <td>${esc(e.claimed_by)}</td>
-      <td>${esc(e.source)}</td>
+      <td>${e.source==='已提取'?'已提取':'未提取'}</td>
       <td>${(e.created_at||'').slice(0,16)}</td>
     </tr>`).join('');
 }
@@ -1688,11 +1697,41 @@ async function importEmails(){
   }
 }
 
-async function loadLogTable(type){
-  const url=API+'/api/log/list?limit=100'+(type?'&type='+encodeURIComponent(type):'');
+async function loadLogTable(filterType){
+  const url=API+'/api/log/list?limit=1000';
   const r=await fetch(url).then(r=>r.json());
+  let logs=r.logs||[];
+
+  // Compute pool-level stats from all logs
+  const domainCount=logs.filter(l=>l.type && l.type.startsWith('domain_')).length;
+  const emailCount=logs.filter(l=>l.type && l.type.startsWith('email_')).length;
+  const replyCount=logs.filter(l=>l.type && l.type.startsWith('reply_')).length;
+  const priceCount=logs.filter(l=>l.type && l.type.startsWith('price_')).length;
+
+  document.getElementById('log-cards').innerHTML=[
+    {l:'Domain Pool', v:domainCount, c:'blue'},
+    {l:'Email Pool', v:emailCount, c:'amber'},
+    {l:'Reply Pool', v:replyCount, c:'green'},
+    {l:'Price Pool', v:priceCount, c:'purple'},
+  ].map(c=>`<div class="card"><div class="label">${c.l}</div><div class="value ${c.c}">${fmt(c.v)}</div></div>`).join('');
+
+  // Filter by pool prefix or exact type
+  if(filterType){
+    if(filterType==='domain'){
+      logs=logs.filter(l=>l.type && l.type.startsWith('domain_'));
+    }else if(filterType==='email'){
+      logs=logs.filter(l=>l.type && l.type.startsWith('email_'));
+    }else if(filterType==='reply'){
+      logs=logs.filter(l=>l.type && l.type.startsWith('reply_'));
+    }else if(filterType==='price'){
+      logs=logs.filter(l=>l.type && l.type.startsWith('price_'));
+    }else{
+      logs=logs.filter(l=>l.type===filterType);
+    }
+  }
+
   document.getElementById('log-table').innerHTML='<tr><th>Time</th><th>User</th><th>Action</th><th>Table</th><th>Count</th><th>Detail</th></tr>'+
-    (r.logs||[]).map(l=>`<tr>
+    logs.slice(0,100).map(l=>`<tr>
       <td>${(l.time||'').slice(0,16)}</td>
       <td>${esc(l.user)}</td>
       <td><span class="status-${l.type||'New'}">${l.type||'-'}</span></td>
