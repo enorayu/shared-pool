@@ -406,7 +406,7 @@ def domain_list():
 def domain_export():
     """
     Export unclaimed domains for a user and lock them.
-    Generates CSV, updates claimed_by + claim_batch_id.
+    Deduplicates by domain name. Generates CSV with domain fields only (no email).
     """
     data = request.get_json(force=True)
     user = data.get("user", "").strip()
@@ -417,20 +417,30 @@ def domain_export():
     # 1. Fetch unclaimed domains
     domains = db.select(
         "domain_pool",
-        select="domain_id,domain,source,contact_email,priority,created_at",
+        select="domain_id,domain,source,priority,created_at",
         filters={"collection_status": "New"},
-        limit=count,
+        limit=count * 3,  # fetch extra for dedup
         order="priority",
         ascending=False,
     )
 
-    if not domains:
+    # Deduplicate by domain name (keep highest priority)
+    seen = set()
+    unique_domains = []
+    for d in domains:
+        dom = d.get("domain", "").strip().lower()
+        if dom and dom not in seen:
+            seen.add(dom)
+            unique_domains.append(d)
+    unique_domains = unique_domains[:count]
+
+    if not unique_domains:
         return jsonify({"exported": 0, "filename": "", "batch_id": ""})
 
     batch_id = f"domain_batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{user}"
     filename = f"{batch_id}.csv"
     now = now_iso()
-    ids = [d["domain_id"] for d in domains]
+    ids = [d["domain_id"] for d in unique_domains]
 
     # 2. Lock domains
     db.patch_by_ids("domain_pool", {
@@ -440,13 +450,13 @@ def domain_export():
         "claim_time": now,
     }, ids)
 
-    # 3. Generate CSV
+    # 3. Generate CSV — domain fields only (no contact_email)
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["domain_id", "domain", "source", "contact_email", "priority", "created_at"])
-    for r in domains:
+    writer.writerow(["domain_id", "domain", "source", "priority", "created_at"])
+    for r in unique_domains:
         writer.writerow([r["domain_id"], r["domain"], safe_str(r.get("source")),
-                         safe_str(r.get("contact_email")), r.get("priority", 0),
+                         r.get("priority", 0),
                          safe_str(r.get("created_at"))[:19]])
 
     csv_content = output.getvalue()
@@ -458,11 +468,11 @@ def domain_export():
         f.write(csv_content)
 
     # 5. Log operation
-    _log_operation("domain_export", user, "domain_pool", len(domains),
+    _log_operation("domain_export", user, "domain_pool", len(unique_domains),
                    f"Batch: {batch_id}, Status: Claimed")
 
     return jsonify({
-        "exported": len(domains),
+        "exported": len(unique_domains),
         "filename": filename,
         "batch_id": batch_id,
         "csv_content": csv_content,
