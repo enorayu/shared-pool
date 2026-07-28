@@ -1637,10 +1637,9 @@ async function loadStats(){
 async function loadDomainTable(){
   const status=document.getElementById('d-status').value;
   const r=await fetch(API+'/api/domain/list?limit=100'+(status?'&status='+status:'')).then(r=>r.json());
-  document.getElementById('domain-table').innerHTML='<tr><th>Domain</th><th>Source</th><th>Status</th><th>Claimed By</th><th>Priority</th><th>Created</th></tr>'+
+  document.getElementById('domain-table').innerHTML='<tr><th>Domain</th><th>Status</th><th>Claimed By</th><th>Priority</th><th>Created</th></tr>'+
     (r.domains||[]).map(d=>`<tr>
       <td>${esc(d.domain)}</td>
-      <td>${d.source==='已提取'?'已提取':'未提取'}</td>
       <td><span class="status-${d.collection_status||'New'}">${d.collection_status||'New'}</span></td>
       <td>${esc(d.claimed_by)}</td>
       <td>${d.priority||0}</td>
@@ -1651,13 +1650,12 @@ async function loadDomainTable(){
 async function loadEmailTable(){
   const u=getUserName()||'';
   const r=await fetch(API+'/api/email/queue?user='+encodeURIComponent(u)+'&count=50').then(r=>r.json());
-  document.getElementById('email-table').innerHTML='<tr><th>Email</th><th>Domain</th><th>Send Status</th><th>Claimed By</th><th>Source</th><th>Created</th></tr>'+
+  document.getElementById('email-table').innerHTML='<tr><th>Email</th><th>Domain</th><th>Send Status</th><th>Claimed By</th><th>Created</th></tr>'+
     (r.emails||[]).map(e=>`<tr>
       <td>${esc(e.contact_email)}</td>
       <td>${esc(e.domain)}</td>
       <td><span class="status-${e.send_status||'UNSENT'}">${e.send_status||'UNSENT'}</span></td>
       <td>${esc(e.claimed_by)}</td>
-      <td>${e.source==='已提取'?'已提取':'未提取'}</td>
       <td>${(e.created_at||'').slice(0,16)}</td>
     </tr>`).join('');
 }
