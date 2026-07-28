@@ -73,14 +73,14 @@ def _cached(key, ttl_sec=30, fn=None):
 
 def _count_unique_domains(status=None):
     """Count unique domain names (deduplicated) by paginated fetch.
-    Cached 60s since it scans all rows.
+    Cached 600s since scanning 161K rows takes ~160 API calls (Supabase caps at 1000/request).
     When status=None, returns a dict of all status counts in one pass."""
     def _do_count():
         seen = {}  # status -> set of unique domains
         if status:
             seen[status] = set()
         offset = 0
-        batch_size = 5000
+        batch_size = 1000  # match Supabase default max-rows cap
         while True:
             batch = db.select("domain_pool", select="domain,collection_status",
                               limit=batch_size, offset=offset,
@@ -108,7 +108,7 @@ def _count_unique_domains(status=None):
         else:
             return {k: len(v) for k, v in seen.items()}
     cache_key = f"unique_domains:{status or 'all'}"
-    return _cached(cache_key, ttl_sec=60, fn=_do_count)
+    return _cached(cache_key, ttl_sec=600, fn=_do_count)
 
 # ── Supabase Client ─────────────────────────────────────────
 
@@ -670,10 +670,11 @@ def email_queue():
 @app.route("/api/email/export", methods=["POST"])
 def email_export():
     """
-    Export UNSENT emails for sending. Only collection_status=New/Claimed.
-    Excludes contacted (sent), replied, bounced, and blacklisted.
-    Deduplicates by normalized contact_email — same email exported only once.
-    Mark exported records as 'Contacted' after successful export.
+    Export UNSENT emails for sending. Same logic as domain pool:
+      - Only exports emails with source="未提取" (or collection_status=New/Claimed for legacy).
+      - Deduplicates by contact_email.
+      - Different users get different emails (claimed_by locking).
+      - Marks source="已提取" after export.
     """
     data = request.get_json(force=True)
     user = data.get("user", "").strip()
@@ -681,15 +682,15 @@ def email_export():
         return jsonify({"error": "user is required", "exported": 0}), 400
     count = min(int(data.get("count", 500)), 5000)
 
-    # Only unsent: New or Claimed (exclude Contacted=already-sent, Replied, bounced, blacklist)
+    # Only unsent and unextracted: New or Claimed
     filters = {"collection_status": "in.(New,Claimed)"}
 
     domains = db.select(
         "domain_pool",
         select="domain_id,domain,contact_email,collection_status,source",
         filters=filters,
-        limit=count * 3,  # fetch extra to account for no-email and dedup
-        order="created_at",
+        limit=count * 3,  # fetch extra for dedup
+        order="domain_id",
         ascending=True,
     )
 
@@ -708,8 +709,9 @@ def email_export():
 
     batch_id = f"email_send_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{user}"
     filename = f"{batch_id}.csv"
+    now = now_iso()
 
-    # Generate CSV — new columns matching Maisui sender expectations
+    # Generate CSV — same format Maisui sender expects
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["email_id", "email", "domain", "send_status", "source"])
@@ -728,16 +730,19 @@ def email_export():
     with open(os.path.join(export_dir, filename), "w", newline="", encoding="utf-8") as f:
         f.write(csv_content)
 
-    # Mark as Contacted (sent) — prevents re-export
+    # Lock: mark as Contacted (sent) + extracted, assign to user
     ids = [e["domain_id"] for e in emails]
     db.patch_by_ids("domain_pool", {
         "collection_status": "Contacted",
-        "updated_at": now_iso(),
+        "source": "已提取",
+        "claimed_by": user,
+        "claim_time": now,
+        "updated_at": now,
     }, ids)
 
     # Log operation
     _log_operation("email_export", user, "email_pool", len(emails),
-                   f"Batch: {batch_id}")
+                   f"Batch: {batch_id}, Source: 已提取")
 
     return jsonify({"exported": len(emails), "filename": filename, "batch_id": batch_id, "csv_content": csv_content})
 
@@ -763,10 +768,10 @@ def email_stats():
 @app.route("/api/email/import", methods=["POST"])
 def email_pool_import():
     """
-    Batch import emails from Maisui collection results.
+    Batch import emails for sending.
     Body: {"emails": [{"email":"a@b.com","domain":"b.com"},...], "imported_by": "leo"}
-    Updates existing domains with contact_email, or creates new domain entries.
-    Marks source as "未提取" and collection_status as "New" so they can be picked up by email export.
+    Deduplicates by contact_email: same email → skip (prevents overwriting existing emails).
+    All new entries marked source="未提取", collection_status="New".
     """
     data = request.get_json(force=True)
     records = data.get("emails", [])
@@ -775,10 +780,9 @@ def email_pool_import():
         return jsonify({"error": "imported_by is required"}), 400
 
     if not records:
-        return jsonify({"imported": 0, "updated": 0, "new": 0})
+        return jsonify({"imported": 0, "new": 0, "skipped": 0})
 
-    updated = 0
-    new_domains = 0
+    imported = 0
     skipped = 0
 
     for rec in records:
@@ -788,32 +792,28 @@ def email_pool_import():
             skipped += 1
             continue
 
-        # Find if domain exists
-        existing = db.select("domain_pool", select="domain_id", filters={"domain": domain}, limit=1)
+        # Dedup by contact_email — same email already in pool → skip
+        existing = db.select("domain_pool", select="domain_id",
+                             filters={"contact_email": email}, limit=1)
         if existing:
-            db.update("domain_pool", {
-                "contact_email": email,
-                "updated_at": now_iso(),
-                "collection_status": "New",
-                "source": "未提取",
-                "notes": f"[email imported by {imported_by}]",
-            }, {"domain_id": existing[0]["domain_id"]})
-            updated += 1
-        else:
-            db.insert("domain_pool", {
-                "domain": domain,
-                "contact_email": email,
-                "source": "未提取",
-                "collection_status": "New",
-                "notes": f"[email imported by {imported_by}]",
-                "priority": 0,
-            })
-            new_domains += 1
+            skipped += 1
+            continue
 
-    _log_operation("email_import", imported_by, "email_pool", updated + new_domains,
-                   f"Updated: {updated}, New: {new_domains}, Skipped: {skipped}")
+        # New record
+        db.insert("domain_pool", {
+            "domain": domain,
+            "contact_email": email,
+            "source": "未提取",
+            "collection_status": "New",
+            "notes": f"[email imported by {imported_by}]",
+            "priority": 0,
+        })
+        imported += 1
 
-    return jsonify({"imported": updated + new_domains, "updated": updated, "new": new_domains, "skipped": skipped})
+    _log_operation("email_import", imported_by, "email_pool", imported,
+                   f"Imported: {imported}, Skipped(dup): {skipped}")
+
+    return jsonify({"imported": imported, "new": imported, "skipped": skipped})
 
 
 # ════════════════════════════════════════════════════════════
