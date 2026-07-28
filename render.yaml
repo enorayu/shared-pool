@@ -1,0 +1,8 @@
+services:
+  - type: web
+    name: shared-pool
+    runtime: python
+    repo: https://github.com/enorayu/shared-pool
+    buildCommand: pip install -r requirements.txt
+    startCommand: python shared_pool_v2.py --port ${PORT:-8765} --host 0.0.0.0
+    plan: free
