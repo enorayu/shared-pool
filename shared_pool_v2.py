@@ -238,7 +238,7 @@ class SB:
         """Insert rows. Returns (resp, data)."""
         extra = {}
         if upsert:
-            extra["Prefer"] = "resolution=merge-duplicates"
+            extra["Prefer"] = "resolution=merge-duplicates, return=representation"
         else:
             extra["Prefer"] = "return=representation"
         resp, data = self._req("POST", table, data=rows, extra_headers=extra)
@@ -726,8 +726,8 @@ def email_export():
         return jsonify({"error": "user is required", "exported": 0}), 400
     count = min(int(data.get("count", 500)), 5000)
 
-    # Only unsent
-    filters = {"send_status": "UNSENT"}
+    # Only unsent and unclaimed (prevent duplicate export race condition)
+    filters = {"send_status": "UNSENT", "claimed_by": "is.null"}
 
     emails = db.select(
         "email_pool",
@@ -885,13 +885,14 @@ def email_pool_import():
     resp, result = db.insert("email_pool", rows, upsert=True)
     imported = 0
     if hasattr(resp, "status") and resp.status in (200, 201):
-        imported = len(result) if isinstance(result, list) else len(rows)
+        # With return=representation, result contains actually inserted rows
+        imported = len(result) if isinstance(result, list) else 0
     elif hasattr(resp, "code"):
         print(f"[email_import] insert failed HTTP {resp.code}: {result}", file=sys.stderr)
     else:
-        # upsert may not return representation — trust the count
-        imported = len(rows)
-        skipped = len(seen) - imported
+        # Should not happen with return=representation, but keep fallback
+        imported = 0
+        skipped = len(seen)
 
     # 5. Clear cache & log
     _cache.clear()
@@ -1669,6 +1670,7 @@ tr:last-child td{border-bottom:none}
   <div class="cards" id="email-cards"></div>
   <div class="actions">
     <button class="btn" onclick="exportEmails()">Export send queue</button>
+    <label style="font-size:12px;color:var(--muted)">Count</label><input id="e-count" value="1000" type="number" style="width:80px">
     <button class="btn green" onclick="toggleEmailImport()">Import emails</button>
   </div>
   <!-- Email Import panel (hidden by default) -->
@@ -2058,7 +2060,8 @@ async function distributeDomains(){
 async function exportEmails(){
   const user=getUserName();
   if(!user){alert('Please enter your name in "My Name" field first');return;}
-  const r=await fetch(API+'/api/email/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user,count:5000})}).then(r=>r.json());
+  const count=document.getElementById('e-count').value;
+  const r=await fetch(API+'/api/email/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user,count:parseInt(count)})}).then(r=>r.json());
   if(r.error){alert(r.error);return;}
   if(r.csv_content){
     const blob=new Blob(['\uFEFF'+r.csv_content],{type:'text/csv;charset=utf-8'});
