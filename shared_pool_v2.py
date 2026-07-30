@@ -1603,7 +1603,7 @@ td{border-bottom:0.5px solid var(--border)}
 tr:last-child td{border-bottom:none}
 .btn{display:inline-block;padding:6px 14px;font-size:12px;font-weight:500;border-radius:6px;border:none;cursor:pointer;color:#fff;background:var(--blue);transition:opacity .2s;margin-right:4px}
 .btn:hover{opacity:.85}
-.btn.green{background:var(--green)}.btn.amber{background:var(--amber)}.btn.coral{background:var(--coral)}.btn.purple{background:var(--purple)}
+.btn.green{background:var(--green)}.btn.amber{background:var(--amber)}.btn.coral{background:var(--coral)}.btn.purple{background:var(--purple)}.btn.teal{background:var(--teal)}
 .actions{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
 .status-New{background:#e6f1fb;color:#185fa5;padding:2px 7px;border-radius:4px;font-size:11px}
 .status-Claimed{background:#faeeda;color:#854f0b;padding:2px 7px;border-radius:4px;font-size:11px}
@@ -1614,6 +1614,9 @@ tr:last-child td{border-bottom:none}
 .cat-C{background:#f1efe8;color:#5f5e5a;font-weight:500;padding:2px 7px;border-radius:4px;font-size:11px}
 .refresh{font-size:11px;color:var(--muted);text-align:right;margin-bottom:12px}
 .page{display:none}.page.active{display:block}
+.btn.active{opacity:.6;box-shadow:inset 0 2px 4px rgba(0,0,0,.2)}
+.log-filter-group{display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap;align-items:center}
+#log-pagination .btn{padding:4px 10px;font-size:11px}
 .form-row{display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
 .form-row input,.form-row select{padding:5px 10px;font-size:12px;border:0.5px solid var(--border);border-radius:6px}
 .form-row label{font-size:12px;color:var(--muted);min-width:60px}
@@ -1725,17 +1728,52 @@ tr:last-child td{border-bottom:none}
 <!-- Operation Log -->
 <div class="page" id="page-log">
   <div class="cards" id="log-cards"></div>
-  <div class="actions">
-    <button class="btn" onclick="loadLogTable('')">All</button>
-    <button class="btn green" onclick="loadLogTable('domain')">Domain Pool</button>
-    <button class="btn amber" onclick="loadLogTable('email')">Email Pool</button>
-    <button class="btn" onclick="loadLogTable('domain_import')">Domain Import</button>
-    <button class="btn" onclick="loadLogTable('domain_export')">Domain Export</button>
-    <button class="btn amber" onclick="loadLogTable('email_import')">Email Import</button>
-    <button class="btn purple" onclick="loadLogTable('email_export')">Email Export</button>
-    <button class="btn coral" onclick="loadLogTable('domain_distribute')">Distribute</button>
+
+  <!-- 一级分类: Pool -->
+  <div class="log-filter-group" id="log-pool-filters">
+    <button class="btn active" id="log-pool-all" onclick="setLogPoolFilter('')">All</button>
+    <button class="btn green" id="log-pool-domain" onclick="setLogPoolFilter('domain')">Domain Pool</button>
+    <button class="btn amber" id="log-pool-email" onclick="setLogPoolFilter('email')">Email Pool</button>
+    <button class="btn teal" id="log-pool-reply" onclick="setLogPoolFilter('reply')">Reply Pool</button>
+    <button class="btn purple" id="log-pool-price" onclick="setLogPoolFilter('price')">Price Pool</button>
   </div>
+
+  <!-- 二级分类: Action (动态显示) -->
+  <div class="log-filter-group" id="log-action-filters" style="display:none">
+    <span style="font-size:12px;color:var(--muted)">Action:</span>
+    <button class="btn active" id="log-action-all" onclick="setLogActionFilter('')">All</button>
+    <button class="btn" id="log-action-import" onclick="setLogActionFilter('import')">Import</button>
+    <button class="btn" id="log-action-export" onclick="setLogActionFilter('export')">Export</button>
+    <button class="btn" id="log-action-distribute" onclick="setLogActionFilter('distribute')">Distribute</button>
+  </div>
+
+  <!-- 用户筛选 -->
+  <div class="log-filter-group">
+    <label style="font-size:12px;color:var(--muted)">User:</label>
+    <select id="log-user-filter" onchange="renderLogPage()" style="padding:4px 10px;font-size:12px;border:0.5px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text)">
+      <option value="">All Users</option>
+    </select>
+    <button class="btn" onclick="refreshLogs()" style="margin-left:auto">Refresh</button>
+  </div>
+
   <table id="log-table"><tr><th>Time</th><th>User</th><th>Action</th><th>Table</th><th>Count</th><th>Detail</th></tr></table>
+
+  <!-- 分页控件 -->
+  <div class="log-filter-group" id="log-pagination" style="justify-content:center;margin-top:8px">
+    <button class="btn" onclick="changeLogPage(-1)" id="log-prev">Prev</button>
+    <span id="log-page-info" style="font-size:12px;color:var(--muted);margin:0 12px">Page 1 / 1 (0 records)</span>
+    <button class="btn" onclick="changeLogPage(1)" id="log-next">Next</button>
+    <label style="font-size:12px;color:var(--muted);margin-left:16px">Per page:</label>
+    <select id="log-page-size" onchange="onLogPageSizeChange()" style="padding:4px 8px;font-size:12px;border:0.5px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text)">
+      <option value="10">10</option>
+      <option value="20" selected>20</option>
+      <option value="50">50</option>
+      <option value="100">100</option>
+    </select>
+  </div>
+
+  <!-- 当前页统计 -->
+  <div id="log-page-stats" style="font-size:12px;color:var(--muted);text-align:center;margin-top:4px;padding-bottom:12px"></div>
 </div>
 
 <script>
@@ -1980,48 +2018,178 @@ function downloadEmailCsvTemplate(){
   URL.revokeObjectURL(url);
 }
 
-async function loadLogTable(filterType){
-  const url=API+'/api/log/list?limit=1000';
-  const r=await fetch(url).then(r=>r.json());
-  let logs=r.logs||[];
+// ── Operation Log (new: two-level filter + user select + pagination + per-page stats) ──
+const LOG = { allLogs: [], poolFilter: '', actionFilter: '', page: 1, pageSize: 20 };
 
-  // Compute pool-level stats from all logs
-  const domainCount=logs.filter(l=>l.type && l.type.startsWith('domain_')).length;
-  const emailCount=logs.filter(l=>l.type && l.type.startsWith('email_')).length;
-  const replyCount=logs.filter(l=>l.type && l.type.startsWith('reply_')).length;
-  const priceCount=logs.filter(l=>l.type && l.type.startsWith('price_')).length;
+function _logActionShort(type) {
+  if (!type) return '-';
+  const map = { domain_import: 'Import', domain_export: 'Export', domain_distribute: 'Distribute',
+                email_import: 'Import', email_export: 'Export',
+                price_import: 'Import', price_export: 'Export',
+                reply_import: 'Import', reply_export: 'Export' };
+  return map[type] || type;
+}
 
-  document.getElementById('log-cards').innerHTML=[
-    {l:'Domain Pool', v:domainCount, c:'blue'},
-    {l:'Email Pool', v:emailCount, c:'amber'},
-    {l:'Reply Pool', v:replyCount, c:'green'},
-    {l:'Price Pool', v:priceCount, c:'purple'},
-  ].map(c=>`<div class="card"><div class="label">${c.l}</div><div class="value ${c.c}">${fmt(c.v)}</div></div>`).join('');
+function _logPoolShort(type) {
+  if (!type) return '-';
+  const p = (type.split('_')[0] || '');
+  return p ? p.charAt(0).toUpperCase() + p.slice(1) + ' Pool' : '-';
+}
 
-  // Filter by pool prefix or exact type
-  if(filterType){
-    if(filterType==='domain'){
-      logs=logs.filter(l=>l.type && l.type.startsWith('domain_'));
-    }else if(filterType==='email'){
-      logs=logs.filter(l=>l.type && l.type.startsWith('email_'));
-    }else if(filterType==='reply'){
-      logs=logs.filter(l=>l.type && l.type.startsWith('reply_'));
-    }else if(filterType==='price'){
-      logs=logs.filter(l=>l.type && l.type.startsWith('price_'));
-    }else{
-      logs=logs.filter(l=>l.type===filterType);
-    }
+async function refreshLogs() {
+  const url = API + '/api/log/list?limit=2000';
+  const r = await fetch(url).then(r => r.json());
+  LOG.allLogs = r.logs || [];
+  LOG.allLogs.sort((a, b) => {
+    const ta = (a.time || a.timestamp || '').replace('T', ' ');
+    const tb = (b.time || b.timestamp || '').replace('T', ' ');
+    return tb.localeCompare(ta);
+  });
+
+  // Build user dropdown
+  const users = [...new Set(LOG.allLogs.map(l => l.user).filter(Boolean))].sort();
+  const sel = document.getElementById('log-user-filter');
+  const oldVal = sel.value;
+  sel.innerHTML = '<option value="">All Users</option>' +
+    users.map(u => `<option value="${esc(u)}">${esc(u)}</option>`).join('');
+  if (users.includes(oldVal)) sel.value = oldVal;
+
+  // Render pool-level cards from ALL logs
+  const domainCount = LOG.allLogs.filter(l => l.type && l.type.startsWith('domain_')).length;
+  const emailCount = LOG.allLogs.filter(l => l.type && l.type.startsWith('email_')).length;
+  const replyCount = LOG.allLogs.filter(l => l.type && l.type.startsWith('reply_')).length;
+  const priceCount = LOG.allLogs.filter(l => l.type && l.type.startsWith('price_')).length;
+  document.getElementById('log-cards').innerHTML = [
+    { l: 'Domain Pool', v: domainCount, c: 'blue' },
+    { l: 'Email Pool', v: emailCount, c: 'amber' },
+    { l: 'Reply Pool', v: replyCount, c: 'green' },
+    { l: 'Price Pool', v: priceCount, c: 'purple' },
+  ].map(c => `<div class="card"><div class="label">${c.l}</div><div class="value ${c.c}">${fmt(c.v)}</div></div>`).join('');
+
+  renderLogPage();
+}
+
+function setLogPoolFilter(pool) {
+  LOG.poolFilter = pool;
+  LOG.actionFilter = '';
+  LOG.page = 1;
+
+  // Update button active states
+  document.querySelectorAll('#log-pool-filters .btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('log-pool-' + (pool || 'all')).classList.add('active');
+
+  // Show/hide action filter row
+  const actionRow = document.getElementById('log-action-filters');
+  if (pool && pool !== 'reply') {
+    actionRow.style.display = 'flex';
+    document.querySelectorAll('#log-action-filters .btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('log-action-all').classList.add('active');
+  } else {
+    actionRow.style.display = 'none';
+    LOG.actionFilter = '';
   }
 
-  document.getElementById('log-table').innerHTML='<tr><th>Time</th><th>User</th><th>Action</th><th>Table</th><th>Count</th><th>Detail</th></tr>'+
-    logs.slice(0,100).map(l=>`<tr>
-      <td>${(l.time||'').slice(0,16)}</td>
+  renderLogPage();
+}
+
+function setLogActionFilter(action) {
+  LOG.actionFilter = action;
+  LOG.page = 1;
+  document.querySelectorAll('#log-action-filters .btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('log-action-' + (action || 'all')).classList.add('active');
+  renderLogPage();
+}
+
+function changeLogPage(delta) {
+  LOG.page += delta;
+  if (LOG.page < 1) LOG.page = 1;
+  renderLogPage();
+}
+
+function onLogPageSizeChange() {
+  LOG.pageSize = parseInt(document.getElementById('log-page-size').value) || 20;
+  LOG.page = 1;
+  renderLogPage();
+}
+
+function renderLogPage() {
+  let logs = [...LOG.allLogs];
+  const userFilter = document.getElementById('log-user-filter').value;
+
+  // Apply pool filter (first-level)
+  if (LOG.poolFilter) {
+    logs = logs.filter(l => l.type && l.type.startsWith(LOG.poolFilter + '_'));
+  }
+
+  // Apply action filter (second-level: import/export/distribute)
+  if (LOG.actionFilter) {
+    logs = logs.filter(l => {
+      const parts = (l.type || '').split('_');
+      return parts[1] === LOG.actionFilter;
+    });
+  }
+
+  // Apply user filter
+  if (userFilter) {
+    logs = logs.filter(l => l.user === userFilter);
+  }
+
+  const total = logs.length;
+  const totalPages = Math.max(1, Math.ceil(total / LOG.pageSize));
+  if (LOG.page > totalPages) LOG.page = totalPages;
+  if (LOG.page < 1) LOG.page = 1;
+
+  const start = (LOG.page - 1) * LOG.pageSize;
+  const pageLogs = logs.slice(start, start + LOG.pageSize);
+
+  // Render table
+  const table = document.getElementById('log-table');
+  table.innerHTML = '<tr><th>Time</th><th>User</th><th>Action</th><th>Pool</th><th>Count</th><th>Detail</th></tr>' +
+    pageLogs.map(l => `<tr>
+      <td>${esc((l.time || '').slice(0, 16))}</td>
       <td>${esc(l.user)}</td>
-      <td><span class="status-${l.type||'New'}">${l.type||'-'}</span></td>
-      <td>${esc(l.table)}</td>
-      <td>${l.count||0}</td>
+      <td><span class="status-${l.type || 'New'}">${_logActionShort(l.type)}</span></td>
+      <td>${_logPoolShort(l.type)}</td>
+      <td>${l.count || 0}</td>
       <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(l.detail)}</td>
     </tr>`).join('');
+
+  // Update pagination info
+  document.getElementById('log-page-info').textContent =
+    `Page ${LOG.page} / ${totalPages} (${total} records)`;
+  document.getElementById('log-prev').disabled = LOG.page <= 1;
+  document.getElementById('log-next').disabled = LOG.page >= totalPages;
+
+  // Per-page statistics
+  const pageTotalCount = pageLogs.reduce((s, l) => s + (l.count || 0), 0);
+  const typeStats = {};
+  pageLogs.forEach(l => {
+    const t = l.type || 'unknown';
+    typeStats[t] = (typeStats[t] || 0) + (l.count || 0);
+  });
+  const statParts = Object.entries(typeStats)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([t, c]) => `${_logActionShort(t)}: ${fmt(c)}`);
+  const statsText = `This page: ${pageLogs.length} logs, total count ${fmt(pageTotalCount)}` +
+    (statParts.length ? ' | ' + statParts.join(' / ') : '');
+  document.getElementById('log-page-stats').textContent = statsText;
+}
+
+// Back-compat wrapper
+async function loadLogTable(filterType) {
+  if (!LOG.allLogs.length) await refreshLogs();
+  if (!filterType) {
+    setLogPoolFilter('');
+  } else if (['domain', 'email', 'reply', 'price'].includes(filterType)) {
+    setLogPoolFilter(filterType);
+  } else {
+    // Exact type like domain_import
+    const pool = filterType.split('_')[0];
+    const action = filterType.split('_')[1];
+    setLogPoolFilter(pool);
+    if (action) setLogActionFilter(action);
+  }
 }
 
 async function loadReplyTable(cat){
