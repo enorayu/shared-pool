@@ -503,11 +503,11 @@ def domain_export():
         return jsonify({"error": "user is required", "exported": 0}), 400
     count = min(int(data.get("count", 200)), 5000)
 
-    # 1. Fetch unclaimed domains (New status, ordered by domain_id ascending)
+    # 1. Fetch unclaimed domains (New status, source!=已提取, ordered by domain_id ascending)
     domains = db.select(
         "domain_pool",
         select="domain_id,domain,source,priority,created_at",
-        filters={"collection_status": "New"},
+        filters={"collection_status": "New", "source": "neq.已提取"},
         limit=count * 3,  # fetch extra for dedup
         order="domain_id",
         ascending=True,
@@ -532,13 +532,23 @@ def domain_export():
     ids = [d["domain_id"] for d in unique_domains]
 
     # 2. Lock domains and mark as extracted
-    db.patch_by_ids("domain_pool", {
+    resp, results = db.patch_by_ids("domain_pool", {
         "claimed_by": user,
         "collection_status": "Claimed",
         "source": "已提取",
         "claim_batch_id": batch_id,
         "claim_time": now,
     }, ids)
+
+    # Verify PATCH actually worked before generating CSV
+    if hasattr(resp, "status") and resp.status not in (200, 201, 204):
+        err_detail = ""
+        if isinstance(results, list) and results:
+            err_detail = str(results[0])[:200]
+        elif isinstance(results, dict):
+            err_detail = results.get("detail", str(results))[:200]
+        print(f"[domain_export] PATCH failed HTTP {resp.status}: {err_detail}", file=sys.stderr)
+        return jsonify({"error": f"Failed to lock domains (HTTP {resp.status})", "exported": 0}), 500
 
     # 3. Generate CSV — domain fields only (no contact_email)
     output = io.StringIO()
