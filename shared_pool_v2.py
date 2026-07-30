@@ -470,30 +470,44 @@ def domain_list():
     if user:
         filters["claimed_by"] = user
 
-    domains = db.select(
-        "domain_pool",
-        select="domain_id,domain,source,collection_status,claimed_by,claim_batch_id,priority,notes,created_at",
-        filters=filters,
-        limit=limit,
-        offset=offset,
-        order="priority",
-        ascending=False,
-    )
-
-    # Deduplicate by domain name (keep first occurrence, highest priority)
+    # Loop-fetch to fill dedup gap: request limit*3 rows, dedup, trim to limit
     seen = set()
     unique_domains = []
-    for d in domains:
-        dom = d.get("domain", "")
-        if dom and dom not in seen:
-            seen.add(dom)
-            unique_domains.append(d)
+    fetch_attempts = 0
+    current_offset = offset
+    max_attempts = max(5, (limit * 10) // 100 + 1)  # Safety limit
+
+    while len(unique_domains) < limit and fetch_attempts < max_attempts:
+        batch = db.select(
+            "domain_pool",
+            select="domain_id,domain,source,collection_status,claimed_by,claim_batch_id,priority,notes,created_at",
+            filters=filters,
+            limit=min(limit * 3, 2000),
+            offset=current_offset,
+            order="priority",
+            ascending=False,
+        )
+        if not batch:
+            break
+        for d in batch:
+            dom = d.get("domain", "")
+            if dom and dom not in seen:
+                seen.add(dom)
+                unique_domains.append(d)
+                if len(unique_domains) >= limit:
+                    break
+        current_offset += len(batch)
+        if len(batch) < min(limit * 3, 2000):
+            break  # No more data
+        fetch_attempts += 1
+
+    # Trim to limit
+    domains = unique_domains[:limit]
 
     total_filters = {k: v for k, v in {"collection_status": status, "claimed_by": user}.items() if v}
-    total = db.count("domain_pool", filters=total_filters if total_filters else None)
     unique_total = _count_unique_domains(status if status else None)
 
-    return jsonify({"domains": unique_domains, "total": total, "unique_total": unique_total})
+    return jsonify({"domains": domains, "unique_total": unique_total})
 
 
 @app.route("/api/domain/export", methods=["POST"])
@@ -1565,35 +1579,35 @@ def quote_import():
         # supplier
         if any(k in cl for k in ['供应商', 'supplier', '发件人', 'from', '联系人', 'contact', 'name']): return 'supplier'
         # contact_email
-        if any(k in cl for k in ['联系邮箱', 'contact_email', 'contact mail']): return 'contact_email'
+        if any(k in cl for k in ['联系邮箱', 'contact_email', 'contact email', 'contact mail']): return 'contact_email'
         # niche
         if any(k in cl for k in ['领域', 'niche', '行业', 'industry', '细分']): return 'niche'
         # country
         if any(k in cl for k in ['国家', 'country', '地区', 'region']): return 'country'
         # traffic
-        if any(k in cl for k in ['流量', 'traffic', '访问量', 'visits']): return 'traffic'
+        if any(k in cl for k in ['流量', 'traffic', 'da', '访问量', 'visits', 'domain authority']): return 'traffic'
         # site_category
-        if any(k in cl for k in ['网站分类', 'site_category', 'category', '分类']): return 'site_category'
+        if any(k in cl for k in ['网站分类', 'site_category', 'site type', 'category', '分类']): return 'site_category'
         # cooperation_type
-        if any(k in cl for k in ['合作类型', 'cooperation_type', 'type', '类型', 'cooperation']): return 'cooperation_type'
+        if any(k in cl for k in ['合作类型', 'cooperation_type', 'collaboration', 'collaboration types', 'type', '合作']): return 'cooperation_type'
         # price
-        if any(k in cl for k in ['价格', 'price', '报价', 'cost', 'fee']): return 'price'
+        if any(k in cl for k in ['价格', 'pricing', 'price', '报价', 'cost', 'fee']): return 'price'
         # link_rules
-        if any(k in cl for k in ['链接规则', 'link_rules', 'link rule', '链接要求']): return 'link_rules'
+        if any(k in cl for k in ['链接规则', 'link_rules', 'link rule', 'publishing guidelines', 'publishing', '链接要求']): return 'link_rules'
         # permanence
         if any(k in cl for k in ['永久', 'permanence', 'permanent', '永久链接']): return 'permanence'
         # content
         if any(k in cl for k in ['内容', 'content', '文章要求']): return 'content'
         # tat
-        if any(k in cl for k in ['时效', 'tat', 'turnaround', '交付时间', 'delivery']): return 'tat'
+        if any(k in cl for k in ['时效', 'tat', 'turnaround', 'turnaround time', '交付时间', 'delivery']): return 'tat'
         # payment
-        if any(k in cl for k in ['付款', 'payment', 'pay', '支付方式']): return 'payment'
+        if any(k in cl for k in ['付款', 'payment', 'payment methods', 'pay', '支付方式']): return 'payment'
         # discount
         if any(k in cl for k in ['折扣', 'discount', '优惠']): return 'discount'
         # additional_services
         if any(k in cl for k in ['附加服务', 'additional_services', 'extra', '增值服务']): return 'additional_services'
         # requirements
-        if any(k in cl for k in ['要求', 'requirements', 'requirement', '条件']): return 'requirements'
+        if any(k in cl for k in ['要求', 'requirements', 'requirement', 'content/link', '内容要求', '条件']): return 'requirements'
         # reply_content
         if any(k in cl for k in ['回复内容', 'reply_content', 'reply', '正文', 'body', 'message']): return 'reply_content'
         # status
@@ -2341,8 +2355,8 @@ tr:last-child td{border-bottom:none}
   </div>
   <div style="overflow-x:auto">
   <table id="quote-table"><tr>
-    <th>Domain</th><th>Supplier</th><th>Country</th><th>Type</th><th>Price</th>
-    <th>Link Rules</th><th>Permanence</th><th>TAT</th><th>Status</th>
+    <th>Domain</th><th>Supplier</th><th>Site Type</th><th>Country</th><th>DA</th>
+    <th>Type</th><th>Price</th><th>TAT</th><th>Content/Link</th><th>Contact</th>
   </tr></table>
   </div>
   <!-- Quote pagination -->
@@ -2413,7 +2427,7 @@ tr:last-child td{border-bottom:none}
 <script>
 const API=location.origin;
 function fmt(n){return n!=null?Number(n).toLocaleString():'0'}
-function esc(s){return String(s||'').replace(/</g,'&lt;').slice(0,80)}
+function esc(s,n=80){return String(s||'').replace(/</g,'&lt;').slice(0,n)}
 
 // ── Pagination state for all pools ──
 const DOMAIN_PAGER={page:1,pageSize:50};
@@ -2589,7 +2603,7 @@ async function loadDomainTable(){
   const limit=DOMAIN_PAGER.pageSize;
   const offset=(DOMAIN_PAGER.page-1)*limit;
   const r=await fetch(API+'/api/domain/list?limit='+limit+'&offset='+offset+(status?'&status='+status:'')).then(r=>r.json());
-  const total=r.total||0;
+  const total=r.unique_total||0;
   const maxPage=Math.max(1,Math.ceil(total/limit));
   if(DOMAIN_PAGER.page>maxPage){DOMAIN_PAGER.page=maxPage;}
   document.getElementById('domain-table').innerHTML='<tr><th>Domain</th><th>Status</th><th>Claimed By</th><th>Priority</th><th>Created</th></tr>'+
@@ -2681,17 +2695,18 @@ async function loadQuoteTable(){
   const total=r.total||0;
   const maxPage=Math.max(1,Math.ceil(total/limit));
   if(QUOTE_PAGER.page>maxPage){QUOTE_PAGER.page=maxPage;}
-  document.getElementById('quote-table').innerHTML='<tr><th>Domain</th><th>Supplier</th><th>Country</th><th>Type</th><th>Price</th><th>Link Rules</th><th>Permanence</th><th>TAT</th><th>Status</th></tr>'+
+  document.getElementById('quote-table').innerHTML='<tr><th>Domain</th><th>Supplier</th><th>Site Type</th><th>Country</th><th>DA</th><th>Type</th><th>Price</th><th>TAT</th><th>Content/Link</th><th>Contact</th></tr>'+
     (r.quotes||[]).map(q=>`<tr>
       <td><a href="http://${esc(q.domain)}" target="_blank">${esc(q.domain)}</a></td>
-      <td>${esc(q.supplier)}</td>
-      <td>${esc(q.country)}</td>
-      <td>${esc(q.cooperation_type)}</td>
-      <td>${esc(q.price)}</td>
-      <td>${esc(q.link_rules)}</td>
-      <td>${esc(q.permanence)}</td>
-      <td>${esc(q.tat)}</td>
-      <td><span class="status-${q.status||'New'}">${q.status||'New'}</span></td>
+      <td title="${esc(q.supplier,200)}">${esc(q.supplier,30)}</td>
+      <td>${esc(q.site_category||q.niche||'',20)}</td>
+      <td>${esc(q.country,20)}</td>
+      <td>${esc(q.traffic,10)}</td>
+      <td>${esc(q.cooperation_type,20)}</td>
+      <td style="white-space:pre-wrap;max-width:180px;font-size:11px">${esc(q.price,200)}</td>
+      <td>${esc(q.tat,30)}</td>
+      <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc((q.requirements||'')+(q.content||''),500)}">${esc((q.requirements||'')+(q.content||''),60)}</td>
+      <td>${esc(q.contact_email||q.email,30)}</td>
     </tr>`).join('');
   document.getElementById('quote-page-info').textContent='Page '+QUOTE_PAGER.page+' / '+maxPage+' ('+total+' records)';
   document.getElementById('quote-pagination').style.display=total>limit?'flex':'none';
