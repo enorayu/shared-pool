@@ -6,8 +6,8 @@ Connects to Supabase PostgreSQL as the data layer.
 Anyone can use it with their own Supabase project — just edit config.py.
 
 Four Pools:
-  Domain Pool  — domain_pool table      (161K+ domains, with contact emails)
-  Email Pool   — derived from domain_pool (send queue, bounce tracking)
+  Domain Pool  — domain_pool table      (161K+ domains)
+  Email Pool   — email_pool table        (send queue, bounce tracking)
   Reply Pool   — reply_pool table        (inbound replies, A/B/C classification)
   Price Pool   — quote_pool table        (multi-supplier quotes, negotiation)
 
@@ -20,7 +20,7 @@ Quick Start:
 Required Supabase Tables (already exist in default project):
   domain_pool, supplier_pool, quote_pool, config
 
-To create reply_pool:
+To create email_pool and reply_pool:
   Run the CREATE TABLE SQL from the /setup page after starting the server.
 """
 
@@ -35,7 +35,7 @@ import urllib.request
 import urllib.error
 import urllib.parse
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 # ── Config ─────────────────────────────────────────────────
 try:
@@ -56,6 +56,15 @@ except ImportError:
     sys.exit(1)
 
 app = Flask(__name__)
+
+# ── CORS 跨域支持 ──
+@app.after_request
+def add_cors_headers(response):
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    return response
+
 REST_URL = f"{SUPABASE_URL}/rest/v1"
 
 # Simple in-memory cache to reduce Supabase API calls
@@ -108,7 +117,7 @@ def _count_unique_domains(status=None):
         else:
             return {k: len(v) for k, v in seen.items()}
     cache_key = f"unique_domains:{status or 'all'}"
-    return _cached(cache_key, ttl_sec=60, fn=_do_count)
+    return _cached(cache_key, ttl_sec=600, fn=_do_count)
 
 # ── Supabase Client ─────────────────────────────────────────
 
@@ -273,12 +282,26 @@ def chunks(lst, n):
         yield lst[i:i + n]
 
 def now_iso():
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(timezone(timedelta(hours=8))).isoformat()
 
 def safe_str(v, default=""):
     if v is None:
         return default
     return str(v)
+
+
+def _utc_to_bj(iso_str):
+    """Convert existing UTC ISO timestamps to Beijing time for display."""
+    if not iso_str or not isinstance(iso_str, str):
+        return iso_str
+    try:
+        if iso_str.endswith("+00:00"):
+            dt = datetime.fromisoformat(iso_str)
+            bj = dt.astimezone(timezone(timedelta(hours=8)))
+            return bj.isoformat()
+        return iso_str
+    except Exception:
+        return iso_str
 
 
 # ── Operation Log helpers ───────────────────────────────────
@@ -664,35 +687,27 @@ EMAIL_STATUSES = ["New", "Unsent", "Assigned", "Sent", "Bounce"]
 @app.route("/api/email/queue", methods=["GET"])
 def email_queue():
     """
-    Get UNSENT emails ready for sending.
-    Only collection_status=New/Claimed, deduplicated by normalized contact_email.
-    Excludes contacted (sent), replied, bounced, and blacklisted.
+    Get UNSENT emails ready for sending from email_pool table.
+    Filter: send_status='UNSENT', ordered by email_id (FIFO).
     """
     user = request.args.get("user", "")
     count = min(int(request.args.get("count", 100)), 2000)
 
-    # Only unsent: New or Claimed
-    filters = {"collection_status": "in.(New,Claimed)"}
+    filters = {"send_status": "UNSENT"}
 
-    domains = db.select(
-        "domain_pool",
-        select="domain_id,domain,contact_email,collection_status,claimed_by,source,created_at",
+    emails = db.select(
+        "email_pool",
+        select="email_id,email,domain,send_status,collection_status,claimed_by,source,notes,created_at",
         filters=filters,
-        limit=count * 3,  # fetch extra to account for dedup
-        order="created_at",
+        limit=count,
+        order="email_id",
         ascending=True,
     )
 
-    # Dedup by normalized email, must have contact_email
-    seen = set()
     result = []
-    for d in domains:
-        email = (d.get("contact_email") or "").strip().lower()
-        if email and email not in seen:
-            seen.add(email)
-            d["send_status"] = "UNSENT"
-            result.append(d)
-    result = result[:count]
+    for e in (emails or []):
+        e["contact_email"] = e.get("email")  # for frontend compatibility
+        result.append(e)
 
     return jsonify({"emails": result, "count": len(result)})
 
@@ -700,11 +715,10 @@ def email_queue():
 @app.route("/api/email/export", methods=["POST"])
 def email_export():
     """
-    Export UNSENT emails for sending. Same logic as domain pool:
-      - Only exports emails with source="未提取" (or collection_status=New/Claimed for legacy).
-      - Deduplicates by contact_email.
+    Export UNSENT emails from email_pool for sending.
+      - Exports emails with send_status='UNSENT'.
       - Different users get different emails (claimed_by locking).
-      - Marks source="已提取" after export.
+      - Marks send_status='SENT', source='已提取' after export.
     """
     data = request.get_json(force=True)
     user = data.get("user", "").strip()
@@ -712,27 +726,17 @@ def email_export():
         return jsonify({"error": "user is required", "exported": 0}), 400
     count = min(int(data.get("count", 500)), 5000)
 
-    # Only unsent and unextracted: New or Claimed
-    filters = {"collection_status": "in.(New,Claimed)"}
+    # Only unsent
+    filters = {"send_status": "UNSENT"}
 
-    domains = db.select(
-        "domain_pool",
-        select="domain_id,domain,contact_email,collection_status,source",
+    emails = db.select(
+        "email_pool",
+        select="email_id,email,domain,send_status,collection_status,source,claimed_by",
         filters=filters,
-        limit=count * 3,  # fetch extra for dedup
-        order="domain_id",
+        limit=count,
+        order="email_id",
         ascending=True,
     )
-
-    # Filter: must have contact_email, dedup by normalized email
-    seen = set()
-    emails = []
-    for d in domains:
-        email = (d.get("contact_email") or "").strip().lower()
-        if email and email not in seen:
-            seen.add(email)
-            emails.append(d)
-    emails = emails[:count]
 
     if not emails:
         return jsonify({"exported": 0, "filename": ""})
@@ -741,16 +745,16 @@ def email_export():
     filename = f"{batch_id}.csv"
     now = now_iso()
 
-    # Generate CSV — same format Maisui sender expects
+    # Generate CSV
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["email_id", "email", "domain", "send_status", "source"])
     for e in emails:
         writer.writerow([
-            e["domain_id"],
-            safe_str(e.get("contact_email")),
+            e["email_id"],
+            safe_str(e.get("email")),
             e["domain"],
-            "UNSENT",
+            e.get("send_status", "UNSENT"),
             safe_str(e.get("source")),
         ])
 
@@ -760,17 +764,23 @@ def email_export():
     with open(os.path.join(export_dir, filename), "w", newline="", encoding="utf-8") as f:
         f.write(csv_content)
 
-    # Lock: mark as Contacted (sent) + extracted, assign to user
-    ids = [e["domain_id"] for e in emails]
-    db.patch_by_ids("domain_pool", {
-        "collection_status": "Contacted",
+    # Lock: mark as SENT + extracted, assign to user
+    ids = [e["email_id"] for e in emails]
+    resp, result = db.patch_by_ids("email_pool", {
+        "send_status": "SENT",
         "source": "已提取",
         "claimed_by": user,
         "claim_time": now,
         "updated_at": now,
-    }, ids)
+    }, ids, id_column="email_id")
+    
+    # Verify update succeeded
+    if resp and hasattr(resp, "status") and resp.status in (200, 201, 204):
+        updated_count = len(result) if isinstance(result, list) else len(emails)
+    else:
+        updated_count = 0
+        print(f"[WARN] email_export PATCH failed: resp={resp}, result={result}")
 
-    # Clear cache & log operation
     global _cache
     _cache.clear()
     _log_operation("email_export", user, "email_pool", len(emails),
@@ -781,30 +791,29 @@ def email_export():
 
 @app.route("/api/email/stats", methods=["GET"])
 def email_stats():
-    """Email pool statistics (derived from domain_pool)."""
-    total = db.count("domain_pool")
-    contacted = db.count("domain_pool", filters={"collection_status": "Contacted"})
-    replied = db.count("domain_pool", filters={"collection_status": "Replied"})
-    new = db.count("domain_pool", filters={"collection_status": "New"})
-    claimed = db.count("domain_pool", filters={"collection_status": "Claimed"})
+    """Email pool statistics (from email_pool table)."""
+    total = db.count("email_pool")
+    unsent = db.count("email_pool", filters={"send_status": "UNSENT"})
+    sent = db.count("email_pool", filters={"send_status": "SENT"})
+    bounce = db.count("email_pool", filters={"send_status": "Bounce"})
 
     return jsonify({
         "total": total,
-        "unsent": new + claimed,
-        "sent": contacted,
-        "replied": replied,
-        "bounce": 0,
+        "unsent": unsent,
+        "sent": sent,
+        "bounce": bounce,
     })
 
 
 @app.route("/api/email/import", methods=["POST"])
 def email_pool_import():
     """
-    Batch import emails for sending.
+    Batch import emails to independent email_pool table.
     Body: {"emails": [{"email":"a@b.com","domain":"b.com"},...], "imported_by": "leo"}
-    Deduplicates by contact_email: same email → skip (prevents overwriting existing emails).
-    All new entries marked source="未提取", collection_status="New".
+    Batch dedup via in.() filter (performance: 1 API call per 100 emails).
+    All new entries marked send_status='UNSENT', source='未提取', collection_status='New'.
     """
+    global _cache
     data = request.get_json(force=True)
     records = data.get("emails", [])
     imported_by = data.get("imported_by", "").strip()
@@ -814,40 +823,82 @@ def email_pool_import():
     if not records:
         return jsonify({"imported": 0, "new": 0, "skipped": 0})
 
-    imported = 0
-    skipped = 0
+    import_batch = f"import_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{imported_by}"
+    notes = f"[email imported by {imported_by}]"
 
+    # 1. Normalize & dedup within batch
+    seen = {}
     for rec in records:
         email = rec.get("email", "").strip().lower()
         domain = rec.get("domain", "").strip().lower().lstrip("www.")
-        if not email or not domain:
-            skipped += 1
+        if not email or not domain or "@" not in email:
             continue
+        if email not in seen:
+            seen[email] = {
+                "email": email,
+                "domain": domain,
+                "send_status": "UNSENT",
+                "source": "未提取",
+                "collection_status": "New",
+                "notes": notes,
+                "import_batch": import_batch,
+                "priority": 0,
+            }
 
-        # Dedup by contact_email — same email already in pool → skip
-        existing = db.select("domain_pool", select="domain_id",
-                             filters={"contact_email": email}, limit=1)
-        if existing:
-            skipped += 1
-            continue
+    if not seen:
+        return jsonify({"imported": 0, "new": 0, "skipped": 0})
 
-        # New record
-        db.insert("domain_pool", {
-            "domain": domain,
-            "contact_email": email,
-            "source": "未提取",
-            "collection_status": "New",
-            "notes": f"[email imported by {imported_by}]",
-            "priority": 0,
-        })
-        imported += 1
+    # 2. Batch check against existing emails (100 per query)
+    email_list = list(seen.keys())
+    existing_emails = set()
+    dedup_errors = 0
+    for i in range(0, len(email_list), 100):
+        batch = email_list[i:i+100]
+        e_filter = ",".join(batch)
+        try:
+            results = db.select("email_pool", select="email",
+                              filters={"email": f"in.({e_filter})"}, limit=100)
+            for r in (results or []):
+                existing_emails.add((r.get("email") or "").strip().lower())
+        except Exception as e:
+            dedup_errors += 1
+            print(f"[email_import] dedup query failed (batch {i}): {e}", file=sys.stderr)
 
-    global _cache
+    # 3. Filter out existing (only trust dedup if no errors)
+    new_emails = {e: v for e, v in seen.items() if e not in existing_emails}
+    skipped = len(seen) - len(new_emails)
+
+    if dedup_errors:
+        print(f"[email_import] WARNING: {dedup_errors} dedup queries failed. "
+              f"Fallback: using server-side upsert. Skipped(counted): {skipped}", file=sys.stderr)
+        # Can't trust skipped count if dedup failed — actual skipped determined by server
+        skipped = 0
+
+    if not new_emails:
+        _cache.clear()
+        _log_operation("email_import", imported_by, "email_pool", 0,
+                       f"All {skipped} emails already exist, Source: 未提取")
+        return jsonify({"imported": 0, "skipped": skipped})
+
+    # 4. Insert new emails (upsert as safety net for dedup failures)
+    rows = list(new_emails.values()) if new_emails else list(seen.values())
+    resp, result = db.insert("email_pool", rows, upsert=True)
+    imported = 0
+    if hasattr(resp, "status") and resp.status in (200, 201):
+        imported = len(result) if isinstance(result, list) else len(rows)
+    elif hasattr(resp, "code"):
+        print(f"[email_import] insert failed HTTP {resp.code}: {result}", file=sys.stderr)
+    else:
+        # upsert may not return representation — trust the count
+        imported = len(rows)
+        skipped = len(seen) - imported
+
+    # 5. Clear cache & log
     _cache.clear()
     _log_operation("email_import", imported_by, "email_pool", imported,
-                   f"Imported: {imported}, Skipped(dup): {skipped}")
+                   f"Source: 未提取, Skipped(dup): {skipped}, Batch: {import_batch}")
 
-    return jsonify({"imported": imported, "new": imported, "skipped": skipped})
+    return jsonify({"imported": imported, "skipped": skipped})
 
 
 # ════════════════════════════════════════════════════════════
@@ -1123,22 +1174,46 @@ def admin_clear_cache():
 
 @app.route("/api/stats", methods=["GET"])
 def get_stats():
-    """Aggregated statistics (cached 30s). Each count() already retries on SSL errors."""
+    """Aggregated statistics (cached 60s). Optimized to avoid slow full-table scans."""
 
     def _fetch():
+        # Domain counts by status — each count() hits Supabase content-range (fast)
         domain_total = db.count("domain_pool")
         domain_new = db.count("domain_pool", filters={"collection_status": "New"})
         domain_claimed = db.count("domain_pool", filters={"collection_status": "Claimed"})
         domain_contacted = db.count("domain_pool", filters={"collection_status": "Contacted"})
         domain_replied = db.count("domain_pool", filters={"collection_status": "Replied"})
 
-        # Unique domain counts — single pass over all domains
-        unique_counts = _count_unique_domains()  # returns {status: count}
-        domain_unique_total = sum(unique_counts.values())
-        domain_unique_new = unique_counts.get("New", 0)
-        domain_unique_claimed = unique_counts.get("Claimed", 0)
-        domain_unique_contacted = unique_counts.get("Contacted", 0)
-        domain_unique_replied = unique_counts.get("Replied", 0)
+        # Skip _count_unique_domains() — it paginates 167K rows (~30-60s).
+        # Use total count as approximate unique count for the dashboard.
+        domain_unique_total = domain_total
+        domain_unique_new = domain_new
+        domain_unique_claimed = domain_claimed
+        domain_unique_contacted = domain_contacted
+        domain_unique_replied = domain_replied
+
+        # Email pool stats — from email_pool table (independent table)
+        # send_status: UNSENT = available, SENT = exported, Bounce = bounced
+        try:
+            email_total = db.count("email_pool")
+            email_unsent = db.count("email_pool", filters={"send_status": "UNSENT"})
+            email_sent = db.count("email_pool", filters={"send_status": "SENT"})
+            email_exported = db.count("email_pool", filters={"send_status": "EXPORTED"})
+            email_bounce = db.count("email_pool", filters={"send_status": "Bounce"})
+            # claimed_by may not exist on email_pool; wrap safely
+            try:
+                email_assigned = db.count("email_pool", filters={"claimed_by": "not.is.null"})
+            except Exception:
+                email_assigned = 0
+            # SENT + EXPORTED both represent "already used / sent"
+            email_sent_total = email_sent + email_exported
+        except Exception:
+            # Fallback to domain_pool mapping if email_pool table doesn't exist
+            email_total = domain_total
+            email_unsent = domain_new + domain_claimed
+            email_sent_total = domain_contacted
+            email_assigned = domain_claimed
+            email_bounce = 0
 
         reply_total = reply_a = reply_b = reply_c = reply_unread = 0
         try:
@@ -1151,21 +1226,22 @@ def get_stats():
             else:
                 # Fallback to supplier_pool legacy data
                 reply_total = db.count("supplier_pool", filters={"status": "Replied"})
-                suppliers = db.select(
-                    "supplier_pool",
-                    select="notes",
-                    filters={"status": "Replied"},
-                    limit=1000,
-                )
-                reply_a = sum(1 for s in suppliers if _parse_reply_category(s.get("notes")) == "A")
-                reply_b = sum(1 for s in suppliers if _parse_reply_category(s.get("notes")) == "B")
-                reply_c = sum(1 for s in suppliers if _parse_reply_category(s.get("notes")) == "C")
-                if reply_total > 1000 and suppliers:
-                    scale = reply_total / len(suppliers)
-                    reply_a = int(reply_a * scale)
-                    reply_b = int(reply_b * scale)
-                    reply_c = int(reply_c * scale)
-                reply_unread = reply_total
+                if reply_total > 0:
+                    suppliers = db.select(
+                        "supplier_pool",
+                        select="notes",
+                        filters={"status": "Replied"},
+                        limit=500,
+                    )
+                    reply_a = sum(1 for s in suppliers if _parse_reply_category(s.get("notes")) == "A")
+                    reply_b = sum(1 for s in suppliers if _parse_reply_category(s.get("notes")) == "B")
+                    reply_c = sum(1 for s in suppliers if _parse_reply_category(s.get("notes")) == "C")
+                    if reply_total > 500 and suppliers:
+                        scale = reply_total / len(suppliers)
+                        reply_a = int(reply_a * scale)
+                        reply_b = int(reply_b * scale)
+                        reply_c = int(reply_c * scale)
+                    reply_unread = reply_total
         except Exception:
             pass
 
@@ -1184,11 +1260,11 @@ def get_stats():
             "domain_unique_contacted": domain_unique_contacted,
             "domain_unique_replied": domain_unique_replied,
             "domain_today_new": 0,
-            "email_total": domain_total,
-            "email_unsent": domain_new + domain_claimed,
-            "email_assigned": domain_claimed,
-            "email_sent": domain_contacted,
-            "email_bounce": 0,
+            "email_total": email_total,
+            "email_unsent": email_unsent,
+            "email_assigned": email_assigned,
+            "email_sent": email_sent_total,
+            "email_bounce": email_bounce,
             "reply_total": reply_total,
             "reply_unread": reply_unread,
             "reply_a": reply_a,
@@ -1201,7 +1277,7 @@ def get_stats():
             "price_suppliers": 0,
         }
 
-    return jsonify(_cached("stats", ttl_sec=30, fn=_fetch))
+    return jsonify(_cached("stats", ttl_sec=60, fn=_fetch))
 
 
 @app.route("/api/members", methods=["GET"])
@@ -1332,10 +1408,77 @@ def log_list():
 
     logs = logs[:limit]
 
+    # Convert legacy UTC timestamps to Beijing time for display
+    for l in logs:
+        if "time" in l:
+            l["time"] = _utc_to_bj(l["time"])
+
     return jsonify({"logs": logs, "count": len(logs)})
 
 
 # ════════════════════════════════════════════════════════════
+
+EMAIL_POOL_SQL = """-- Run this in Supabase SQL Editor to create the email_pool table:
+-- (This is the independent email pool — separate from domain_pool)
+
+CREATE TABLE IF NOT EXISTS email_pool (
+    email_id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    email               TEXT NOT NULL,
+    domain              TEXT NOT NULL,
+    send_status         TEXT DEFAULT 'UNSENT',
+    source              TEXT DEFAULT '未提取',
+    collection_status   TEXT DEFAULT 'New',
+    claimed_by          TEXT,
+    claim_time          TIMESTAMPTZ,
+    import_batch        TEXT,
+    notes               TEXT,
+    priority            INT DEFAULT 0,
+    created_at          TIMESTAMPTZ DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Unique index on email (dedup key)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_email_pool_email ON email_pool(email);
+CREATE INDEX IF NOT EXISTS idx_email_pool_domain ON email_pool(domain);
+CREATE INDEX IF NOT EXISTS idx_email_pool_status ON email_pool(send_status);
+CREATE INDEX IF NOT EXISTS idx_email_pool_collection ON email_pool(collection_status);
+
+-- Enable RLS for email_pool
+ALTER TABLE email_pool ENABLE ROW LEVEL SECURITY;
+
+-- Allow anon reads
+CREATE POLICY "anon_can_read_emails" ON email_pool
+    FOR SELECT USING (true);
+
+-- Allow anon inserts
+CREATE POLICY "anon_can_insert_emails" ON email_pool
+    FOR INSERT WITH CHECK (true);
+
+-- Allow anon updates
+CREATE POLICY "anon_can_update_emails" ON email_pool
+    FOR UPDATE USING (true);
+
+
+-- Optional: migrate existing email data from domain_pool to email_pool
+-- Uncomment and run if you have existing contact_email data in domain_pool:
+
+/*
+INSERT INTO email_pool (email, domain, source, collection_status, claimed_by, claim_time, notes, priority, created_at)
+SELECT DISTINCT ON (LOWER(TRIM(contact_email)))
+  LOWER(TRIM(contact_email)) as email,
+  LOWER(TRIM(domain)) as domain,
+  COALESCE(source, '未提取') as source,
+  COALESCE(collection_status, 'New') as collection_status,
+  claimed_by,
+  claim_time,
+  notes,
+  COALESCE(priority, 0) as priority,
+  created_at
+FROM domain_pool
+WHERE contact_email IS NOT NULL AND TRIM(contact_email) != ''
+ON CONFLICT (email) DO NOTHING;
+*/
+"""
 
 SETUP_SQL = """-- Run this in Supabase SQL Editor to create the reply_pool table:
 
@@ -1381,7 +1524,7 @@ CREATE POLICY "anon_can_update_replies" ON reply_pool
 def setup_page():
     """Show setup instructions."""
     tables_found = {}
-    for tbl in ["domain_pool", "supplier_pool", "quote_pool", "reply_pool", "config"]:
+    for tbl in ["domain_pool", "email_pool", "supplier_pool", "quote_pool", "reply_pool", "config"]:
         try:
             cnt = db.count(tbl)
             tables_found[tbl] = f"OK ({cnt} rows)"
@@ -1408,7 +1551,10 @@ h2{{border-top:1px solid #e0e0e0;padding-top:20px;margin-top:30px}}
 <h1>Shared Pool v2 — Setup</h1>
 <p>Supabase: <code>{SUPABASE_URL}</code></p>
 <table>{rows}</table>
-<p>If <b>reply_pool</b> is MISSING, copy the SQL below to your Supabase SQL Editor:</p>
+<p>If <b>email_pool</b> or <b>reply_pool</b> is MISSING, copy the SQL below to your Supabase SQL Editor:</p>
+<h2>email_pool</h2>
+<pre>{EMAIL_POOL_SQL}</pre>
+<h2>reply_pool</h2>
 <pre>{SETUP_SQL}</pre>
 <p><a href="/">← Back to Dashboard</a></p>
 </body></html>"""
@@ -1485,7 +1631,7 @@ tr:last-child td{border-bottom:none}
   </div>
   <div class="form-row">
     <label>My Name</label><input id="d-user" placeholder="your name" style="width:100px" onchange="saveUserName()">
-    <label>Count</label><input id="d-count" value="200" type="number" style="width:80px">
+    <label>Count</label><input id="d-count" value="5000" type="number" style="width:80px">
     <label>Status</label><select id="d-status" onchange="loadDomainTable()"><option value="">All</option><option value="New">New</option><option value="Claimed">Claimed</option><option value="Contacted">Contacted</option><option value="Replied">Replied</option></select>
   </div>
   <!-- Import panel (hidden by default) -->
@@ -1527,10 +1673,16 @@ tr:last-child td{border-bottom:none}
   </div>
   <!-- Email Import panel (hidden by default) -->
   <div id="email-import-panel" style="display:none;margin-bottom:16px;padding:14px;background:var(--card);border:0.5px solid var(--border);border-radius:10px">
-    <div style="font-size:13px;font-weight:500;margin-bottom:8px">Import Emails (from Maisui collection)</div>
+    <div style="font-size:13px;font-weight:500;margin-bottom:8px">Import Emails (independent email pool, batch dedup, large batches OK)</div>
     <textarea id="email-import-text" rows="5" placeholder="Paste email-domain pairs, one per line&#10;email@example.com,example.com&#10;contact@site.org,site.org&#10;..." style="width:100%;padding:8px;font-size:12px;border:0.5px solid var(--border);border-radius:6px;resize:vertical"></textarea>
-    <div style="margin-top:8px;display:flex;align-items:center;gap:8px">
+    <div style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
       <button class="btn green" onclick="importEmails()">Submit Import</button>
+      <span style="color:var(--muted);font-size:12px">or</span>
+      <label style="cursor:pointer">
+        <input type="file" id="email-import-csv-file" accept=".csv" style="display:none" onchange="handleEmailCsvUpload(this)">
+        <span class="btn" style="display:inline-block">Upload CSV</span>
+      </label>
+      <button class="btn" style="font-size:11px" onclick="downloadEmailCsvTemplate()">Download Template</button>
       <span id="email-import-result" style="font-size:12px;color:var(--muted)"></span>
     </div>
   </div>
@@ -1703,8 +1855,8 @@ async function loadStats(){
       {l:'Replied',v:s.domain_unique_replied,c:'green'},
     ].map(c=>`<div class="card"><div class="label">${c.l}</div><div class="value ${c.c}">${fmt(c.v)}</div></div>`).join('');
     document.getElementById('email-cards').innerHTML=[
-      {l:'Total Domains',v:s.email_total,c:'blue'},{l:'Unsent',v:s.email_unsent,c:'amber'},
-      {l:'Claimed',v:s.email_assigned,c:'purple'},{l:'Sent',v:s.email_sent,c:'green'},
+      {l:'Total Emails',v:s.email_total,c:'blue'},{l:'Unsent',v:s.email_unsent,c:'amber'},
+      {l:'Sent',v:s.email_sent,c:'green'},{l:'Bounce',v:s.email_bounce,c:'red'},
     ].map(c=>`<div class="card"><div class="label">${c.l}</div><div class="value ${c.c}">${fmt(c.v)}</div></div>`).join('');
     document.getElementById('reply-cards').innerHTML=[
       {l:'Total',v:s.reply_total,c:'blue'},{l:'Unread',v:s.reply_unread,c:'amber'},
@@ -1771,12 +1923,49 @@ async function importEmails(){
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({emails:records,imported_by:user})
     }).then(r=>r.json());
-    document.getElementById('email-import-result').textContent='Done: '+r.imported+' imported ('+r.updated+' updated, '+r.new+' new, '+r.skipped+' skipped)';
+    document.getElementById('email-import-result').textContent='Done: '+r.imported+' imported, '+r.skipped+' skipped (duplicates)';
     document.getElementById('email-import-text').value='';
     loadStats();loadEmailTable();
   }catch(e){
     document.getElementById('email-import-result').textContent='Error: '+e.message;
   }
+}
+function handleEmailCsvUpload(input){
+  const file=input.files[0];
+  if(!file)return;
+  const reader=new FileReader();
+  reader.onload=function(e){
+    const text=e.target.result;
+    const lines=text.split(/\r?\n/);
+    const pairs=[];
+    for(const line of lines){
+      const cells=line.split(/,|;|\t/);
+      if(cells.length>=2){
+        const email=cells[0].trim().toLowerCase();
+        const domain=cells[1].trim().toLowerCase().replace(/^www\./,'');
+        if(email.includes('@')&&domain.includes('.')){
+          pairs.push(email+','+domain);
+        }
+      }
+    }
+    if(!pairs.length){alert('No valid email-domain pairs found in CSV');input.value='';return;}
+    document.getElementById('email-import-text').value=pairs.join('\n');
+    document.getElementById('email-import-result').textContent='CSV loaded: '+pairs.length+' email-domain pairs ready. Click Submit Import.';
+    input.value='';
+  };
+  reader.readAsText(file);
+}
+function downloadEmailCsvTemplate(){
+  const csv='email,domain\na@example.com,example.com\nb@site.org,site.org\ncontact@company.net,company.net\n';
+  const blob=new Blob([csv],{type:'text/csv'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url;
+  a.download='email_import_template.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 async function loadLogTable(filterType){
@@ -1869,7 +2058,7 @@ async function distributeDomains(){
 async function exportEmails(){
   const user=getUserName();
   if(!user){alert('Please enter your name in "My Name" field first');return;}
-  const r=await fetch(API+'/api/email/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user,count:500})}).then(r=>r.json());
+  const r=await fetch(API+'/api/email/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user,count:5000})}).then(r=>r.json());
   if(r.error){alert(r.error);return;}
   if(r.csv_content){
     const blob=new Blob(['\uFEFF'+r.csv_content],{type:'text/csv;charset=utf-8'});
