@@ -34,6 +34,9 @@ import time as _time
 import urllib.request
 import urllib.error
 import urllib.parse
+import re as _re
+import requests
+import openpyxl
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 
@@ -66,6 +69,10 @@ def add_cors_headers(response):
     return response
 
 REST_URL = f"{SUPABASE_URL}/rest/v1"
+AUTH_HEADERS = {
+    "apikey": SUPABASE_ANON_KEY,
+    "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+}
 
 # Simple in-memory cache to reduce Supabase API calls
 _cache = {}
@@ -952,6 +959,174 @@ def _supplier_to_reply(s):
     }
 
 
+@app.route("/api/reply/import", methods=["POST"])
+def reply_import():
+    """
+    Import replies from Excel/CSV upload.
+    Template columns: 序号,邮箱,域名,账号,发件人,主题,正文摘要,日期
+    Deduplicates by email (skip existing).
+    """
+    user = request.form.get("user", "unknown").strip()
+    file = request.files.get("file")
+    if not file:
+        return jsonify({"error": "No file uploaded"}), 400
+
+    try:
+        filename = file.filename.lower()
+        if filename.endswith('.csv'):
+            content = file.read().decode('utf-8-sig')
+            reader = csv.DictReader(io.StringIO(content))
+            rows = list(reader)
+        else:
+            # Excel: use openpyxl
+            wb = openpyxl.load_workbook(io.BytesIO(file.read()))
+            ws = wb.active
+            headers = [str(c.value or '').strip() for c in ws[1]]
+            rows = []
+            for row in ws.iter_rows(min_row=2, values_only=True):
+                rows.append(dict(zip(headers, [str(v or '') for v in row])))
+    except Exception as e:
+        return jsonify({"error": f"File parse error: {str(e)}"}), 400
+
+    if not rows:
+        return jsonify({"error": "Empty file"}), 400
+
+    # Normalize column names
+    col_map = {}
+    for col in rows[0].keys():
+        cl = col.lower().strip()
+        if any(k in cl for k in ['邮箱', 'email', 'mail']): col_map[col] = 'email'
+        elif any(k in cl for k in ['域名', 'domain']): col_map[col] = 'domain'
+        elif any(k in cl for k in ['账号', 'account', 'inbox', 'discovered']): col_map[col] = 'account'
+        elif any(k in cl for k in ['发件人', 'from', 'supplier', 'name']): col_map[col] = 'supplier'
+        elif any(k in cl for k in ['主题', 'subject', 'title']): col_map[col] = 'subject'
+        elif any(k in cl for k in ['正文', 'body', 'content', 'preview', '摘要']): col_map[col] = 'body'
+        elif any(k in cl for k in ['日期', 'date', 'time', 'reply_time']): col_map[col] = 'date'
+
+    # Get existing emails for dedup (paginated fetch)
+    existing = set()
+    try:
+        page, page_size = 0, 1000
+        while True:
+            resp = requests.get(
+                f"{SUPABASE_URL}/rest/v1/reply_pool?select=email&limit={page_size}&offset={page*page_size}",
+                headers=AUTH_HEADERS,
+                timeout=30
+            )
+            if resp.status_code != 200:
+                break
+            data = resp.json()
+            if not data:
+                break
+            for r in data:
+                if r.get('email'):
+                    existing.add(r['email'].lower())
+            if len(data) < page_size:
+                break
+            page += 1
+    except Exception:
+        pass  # if can't check, rely on UNIQUE(email) constraint
+
+    imported = 0
+    skipped = 0
+    batch = []
+    BATCH_SIZE = 50
+
+    def flush_batch():
+        nonlocal imported
+        if not batch:
+            return
+        for attempt in range(3):
+            try:
+                resp = requests.post(
+                    f"{SUPABASE_URL}/rest/v1/reply_pool",
+                    headers={**AUTH_HEADERS, 'Prefer': 'return=representation'},
+                    json=batch,
+                    timeout=30
+                )
+                if resp.status_code in (200, 201):
+                    imported += len(batch)
+                    break
+            except Exception:
+                if attempt < 2:
+                    _time.sleep(1)
+        batch.clear()
+
+    for row in rows:
+        email = _extract_email(row, col_map)
+        if not email:
+            continue
+        email = email.lower()
+        if email in existing:
+            skipped += 1
+            continue
+        existing.add(email)  # dedup within this batch too
+
+        supplier = row.get(col_map.get('supplier', ''), '') or ''
+        domain = row.get(col_map.get('domain', ''), '') or email.split('@')[-1]
+        discovered = row.get(col_map.get('account', ''), '') or user
+        subject = row.get(col_map.get('subject', ''), '') or ''
+        body = row.get(col_map.get('body', ''), '') or ''
+        date_str = row.get(col_map.get('date', ''), '') or ''
+
+        reply_time = now_iso()
+        if date_str:
+            try:
+                for fmt in ['%Y-%m-%d %H:%M:%S', '%Y-%m-%d', '%Y/%m/%d', '%a, %d %b %Y %H:%M:%S %z']:
+                    try:
+                        reply_time = datetime.strptime(date_str.strip(), fmt).isoformat()
+                        break
+                    except ValueError:
+                        continue
+            except Exception:
+                pass
+
+        batch.append({
+            "email": email,
+            "domain": domain.lower(),
+            "reply_content": f"{subject}\n\n{body}"[:5000],
+            "reply_time": reply_time,
+            "category": "C",
+            "status": "New",
+            "supplier": supplier[:200],
+            "contact_email": email,
+            "discovered_by": discovered[:100],
+            "discovered_at": now_iso(),
+            "notes": f"Imported by {user}",
+        })
+
+        if len(batch) >= BATCH_SIZE:
+            flush_batch()
+
+    flush_batch()
+
+    # Log operation
+    _log_operation("reply_import", user, "reply_pool", imported,
+                   f"Imported {imported} replies" + (f", skipped {skipped} duplicates" if skipped else ""))
+
+    return jsonify({"imported": imported, "skipped": skipped, "total": len(rows)})
+
+
+def _extract_email(row, col_map):
+    """Extract email from various field formats."""
+    # Try email column first
+    email_col = col_map.get('email')
+    if email_col:
+        val = str(row.get(email_col, '') or '').strip()
+        if '@' in val:
+            return val.split()[0].strip() if ' ' in val else val
+
+    # Try from/supplier column (may have format "Name <email>")
+    supplier_col = col_map.get('supplier')
+    if supplier_col:
+        val = str(row.get(supplier_col, '') or '').strip()
+        m = _re.search(r'<([^>]+@[^>]+)>', val)
+        if m:
+            return m.group(1)
+
+    return None
+
+
 @app.route("/api/reply/add", methods=["POST"])
 def reply_add():
     """
@@ -1683,13 +1858,15 @@ tr:last-child td{border-bottom:none}
   <div class="cards" id="email-cards"></div>
   <div class="actions">
     <button class="btn" onclick="exportEmails()">Export send queue</button>
+    <label style="font-size:12px;color:var(--muted)">My Name</label><input id="e-user" placeholder="your name" style="width:100px" onchange="saveUserName()">
     <label style="font-size:12px;color:var(--muted)">Count</label><input id="e-count" value="1000" type="number" style="width:80px">
     <button class="btn green" onclick="toggleEmailImport()">Import emails</button>
   </div>
   <!-- Email Import panel (hidden by default) -->
   <div id="email-import-panel" style="display:none;margin-bottom:16px;padding:14px;background:var(--card);border:0.5px solid var(--border);border-radius:10px">
     <div style="font-size:13px;font-weight:500;margin-bottom:8px">Import Emails (independent email pool, batch dedup, large batches OK)</div>
-    <textarea id="email-import-text" rows="5" placeholder="Paste email-domain pairs, one per line&#10;email@example.com,example.com&#10;contact@site.org,site.org&#10;..." style="width:100%;padding:8px;font-size:12px;border:0.5px solid var(--border);border-radius:6px;resize:vertical"></textarea>
+    <input id="email-import-user" placeholder="Your name" style="width:120px;padding:4px 8px;margin-right:8px" value="">
+    <textarea id="email-import-text" rows="5" placeholder="Paste email-domain pairs, one per line&#10;email@example.com,example.com&#10;contact@site.org,site.org&#10;..." style="width:100%;padding:8px;font-size:12px;border:0.5px solid var(--border);border-radius:6px;resize:vertical;margin-top:8px"></textarea>
     <div style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
       <button class="btn green" onclick="importEmails()">Submit Import</button>
       <span style="color:var(--muted);font-size:12px">or</span>
@@ -1712,6 +1889,18 @@ tr:last-child td{border-bottom:none}
     <button class="btn green" onclick="loadReplyTable('A')">A class</button>
     <button class="btn amber" onclick="loadReplyTable('B')">B class</button>
     <button class="btn purple" onclick="loadReplyTable('C')">C class</button>
+    <label style="font-size:12px;color:var(--muted)">My Name</label><input id="r-user" placeholder="your name" style="width:100px" onchange="saveUserName()">
+    <button class="btn green" onclick="toggleReplyImport()">Import replies</button>
+  </div>
+  <!-- Reply Import panel (hidden by default) -->
+  <div id="reply-import-panel" style="display:none;margin-bottom:16px;padding:14px;background:var(--card);border:0.5px solid var(--border);border-radius:10px">
+    <div style="font-size:13px;font-weight:500;margin-bottom:8px">Import Replies (Excel/CSV, template: 序号,邮箱,域名,账号,发件人,主题,正文摘要,日期)</div>
+    <label style="cursor:pointer">
+      <input type="file" id="reply-import-file" accept=".xlsx,.csv" style="display:none" onchange="handleReplyUpload(this)">
+      <span class="btn" style="display:inline-block">Upload File</span>
+    </label>
+    <button class="btn" style="font-size:11px" onclick="downloadReplyTemplate()">Download Template</button>
+    <span id="reply-import-result" style="font-size:12px;color:var(--muted)"></span>
   </div>
   <table id="reply-table"><tr><th>Email</th><th>Domain</th><th>Category</th><th>Status</th><th>Supplier</th><th>Reply Time</th><th>Content</th></tr></table>
 </div>
@@ -1786,17 +1975,29 @@ function getUserName(){
   const el=document.getElementById('d-user');
   let name=el.value.trim();
   if(!name) name=localStorage.getItem('shared_pool_user')||'';
-  if(name) el.value=name;
+  if(name){
+    el.value=name;
+    const eu=document.getElementById('e-user'); if(eu) eu.value=name;
+    const ru=document.getElementById('r-user'); if(ru) ru.value=name;
+  }
   return name;
 }
 function saveUserName(){
   const name=document.getElementById('d-user').value.trim();
-  if(name) localStorage.setItem('shared_pool_user',name);
+  if(name){
+    localStorage.setItem('shared_pool_user',name);
+    const eu=document.getElementById('e-user'); if(eu) eu.value=name;
+    const ru=document.getElementById('r-user'); if(ru) ru.value=name;
+  }
 }
 // Load saved user name on page load
 (function(){
   const saved=localStorage.getItem('shared_pool_user');
-  if(saved) document.getElementById('d-user').value=saved;
+  if(saved){
+    const du=document.getElementById('d-user'); if(du) du.value=saved;
+    const eu=document.getElementById('e-user'); if(eu) eu.value=saved;
+    const ru=document.getElementById('r-user'); if(ru) ru.value=saved;
+  }
 })();
 
 // ── Import panel ──
@@ -2046,14 +2247,6 @@ async function refreshLogs() {
     return tb.localeCompare(ta);
   });
 
-  // Build user dropdown
-  const users = [...new Set(LOG.allLogs.map(l => l.user).filter(Boolean))].sort();
-  const sel = document.getElementById('log-user-filter');
-  const oldVal = sel.value;
-  sel.innerHTML = '<option value="">All Users</option>' +
-    users.map(u => `<option value="${esc(u)}">${esc(u)}</option>`).join('');
-  if (users.includes(oldVal)) sel.value = oldVal;
-
   // Render pool-level cards from ALL logs
   const domainCount = LOG.allLogs.filter(l => l.type && l.type.startsWith('domain_')).length;
   const emailCount = LOG.allLogs.filter(l => l.type && l.type.startsWith('email_')).length;
@@ -2114,7 +2307,6 @@ function onLogPageSizeChange() {
 
 function renderLogPage() {
   let logs = [...LOG.allLogs];
-  const userFilter = document.getElementById('log-user-filter').value;
 
   // Apply pool filter (first-level)
   if (LOG.poolFilter) {
@@ -2129,7 +2321,17 @@ function renderLogPage() {
     });
   }
 
+  // Build user dropdown from filtered logs, exclude test/system entries
+  const TEST_RE = /test|system|demo|unknown|admin@/i;
+  const filteredUsers = [...new Set(logs.map(l => l.user).filter(u => u && !TEST_RE.test(u)))].sort();
+  const sel = document.getElementById('log-user-filter');
+  const oldVal = sel.value;
+  sel.innerHTML = '<option value="">All Users</option>' +
+    filteredUsers.map(u => `<option value="${esc(u)}">${esc(u)}</option>`).join('');
+  if (filteredUsers.includes(oldVal)) sel.value = oldVal;
+
   // Apply user filter
+  const userFilter = sel.value;
   if (userFilter) {
     logs = logs.filter(l => l.user === userFilter);
   }
@@ -2214,6 +2416,39 @@ async function loadPriceTable(){
       <td>${p.price||'-'}</td><td>${p.currency||'-'}</td><td>${esc(p.link_type)}</td>
       <td>${esc(p.status)}</td><td>${(p.created_at||'').slice(0,16)}</td>
     </tr>`).join('');
+}
+
+// ── Reply Pool import ──
+function toggleReplyImport(){
+  const p=document.getElementById('reply-import-panel');
+  p.style.display=p.style.display==='none'?'block':'none';
+}
+function downloadReplyTemplate(){
+  const csv='\uFEFF序号,邮箱,域名,账号,发件人,主题,正文摘要,日期\n1,example@domain.com,domain.com,your-account,Supplier Name,Reply Subject,Reply body preview...,2026-07-30';
+  const blob=new Blob([csv],{type:'text/csv;charset=utf-8'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='reply_import_template.csv';a.click();
+}
+async function handleReplyUpload(input){
+  const user=getUserName();
+  if(!user){alert('Please enter your name in "My Name" field first');return;}
+  if(!input.files||!input.files[0])return;
+  const file=input.files[0];
+  const result=document.getElementById('reply-import-result');
+  result.textContent='Uploading...';
+  const form=new FormData();
+  form.append('file',file);
+  form.append('user',user);
+  try{
+    const r=await fetch(API+'/api/reply/import',{method:'POST',body:form});
+    const data=await r.json();
+    if(data.error){result.textContent='Error: '+data.error;alert(data.error);}
+    else{
+      result.textContent='OK: imported '+data.imported+', skipped '+data.skipped+' duplicates';
+      alert('Imported '+data.imported+' replies'+(data.skipped?' (skipped '+data.skipped+' duplicates)':''));
+      loadReplyTable('');loadStats();
+    }
+  }catch(e){result.textContent='Network error';alert('Upload failed: '+e.message);}
+  input.value='';
 }
 
 async function exportDomains(){
