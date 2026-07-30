@@ -1512,6 +1512,205 @@ def quote_import_a_replies():
     })
 
 
+@app.route("/api/quote/import", methods=["POST"])
+def quote_import():
+    """
+    Import quotes from Excel/CSV upload.
+    Smart column mapping supports both English and Chinese headers.
+    Deduplicates by email (skip existing).
+    """
+    user = request.form.get("user", "unknown").strip()
+    file = request.files.get("file")
+    if not file:
+        return jsonify({"error": "No file uploaded"}), 400
+
+    try:
+        filename = file.filename.lower()
+        if filename.endswith('.csv'):
+            content = file.read().decode('utf-8-sig')
+            reader = csv.DictReader(io.StringIO(content))
+            rows = list(reader)
+        else:
+            wb = openpyxl.load_workbook(io.BytesIO(file.read()))
+            ws = wb.active
+            headers = [str(c.value or '').strip() for c in ws[1]]
+            rows = []
+            for row in ws.iter_rows(min_row=2, values_only=True):
+                rows.append(dict(zip(headers, [str(v or '') for v in row])))
+    except Exception as e:
+        return jsonify({"error": f"File parse error: {str(e)}"}), 400
+
+    if not rows:
+        return jsonify({"error": "Empty file"}), 400
+
+    # Smart column mapping (English + Chinese)
+    def map_col(col):
+        cl = col.lower().strip()
+        # email
+        if any(k in cl for k in ['邮箱', 'email', 'mail', 'e-mail']): return 'email'
+        # domain
+        if any(k in cl for k in ['域名', 'domain', '网站']): return 'domain'
+        # supplier
+        if any(k in cl for k in ['供应商', 'supplier', '发件人', 'from', '联系人', 'contact', 'name']): return 'supplier'
+        # contact_email
+        if any(k in cl for k in ['联系邮箱', 'contact_email', 'contact mail']): return 'contact_email'
+        # niche
+        if any(k in cl for k in ['领域', 'niche', '行业', 'industry', '细分']): return 'niche'
+        # country
+        if any(k in cl for k in ['国家', 'country', '地区', 'region']): return 'country'
+        # traffic
+        if any(k in cl for k in ['流量', 'traffic', '访问量', 'visits']): return 'traffic'
+        # site_category
+        if any(k in cl for k in ['网站分类', 'site_category', 'category', '分类']): return 'site_category'
+        # cooperation_type
+        if any(k in cl for k in ['合作类型', 'cooperation_type', 'type', '类型', 'cooperation']): return 'cooperation_type'
+        # price
+        if any(k in cl for k in ['价格', 'price', '报价', 'cost', 'fee']): return 'price'
+        # link_rules
+        if any(k in cl for k in ['链接规则', 'link_rules', 'link rule', '链接要求']): return 'link_rules'
+        # permanence
+        if any(k in cl for k in ['永久', 'permanence', 'permanent', '永久链接']): return 'permanence'
+        # content
+        if any(k in cl for k in ['内容', 'content', '文章要求']): return 'content'
+        # tat
+        if any(k in cl for k in ['时效', 'tat', 'turnaround', '交付时间', 'delivery']): return 'tat'
+        # payment
+        if any(k in cl for k in ['付款', 'payment', 'pay', '支付方式']): return 'payment'
+        # discount
+        if any(k in cl for k in ['折扣', 'discount', '优惠']): return 'discount'
+        # additional_services
+        if any(k in cl for k in ['附加服务', 'additional_services', 'extra', '增值服务']): return 'additional_services'
+        # requirements
+        if any(k in cl for k in ['要求', 'requirements', 'requirement', '条件']): return 'requirements'
+        # reply_content
+        if any(k in cl for k in ['回复内容', 'reply_content', 'reply', '正文', 'body', 'message']): return 'reply_content'
+        # status
+        if any(k in cl for k in ['状态', 'status', 'state']): return 'status'
+        # notes
+        if any(k in cl for k in ['备注', 'notes', 'note', 'comment']): return 'notes'
+        # priority
+        if any(k in cl for k in ['优先级', 'priority', '重要度']): return 'priority'
+        return None
+
+    col_map = {}
+    for col in rows[0].keys():
+        mapped = map_col(col)
+        if mapped:
+            col_map[mapped] = col
+
+    # Get existing emails for dedup
+    existing = set()
+    try:
+        page, page_size = 0, 1000
+        while True:
+            resp = requests.get(
+                f"{SUPABASE_URL}/rest/v1/quote_pool?select=email&limit={page_size}&offset={page*page_size}",
+                headers=AUTH_HEADERS,
+                timeout=30
+            )
+            if resp.status_code != 200:
+                break
+            data = resp.json()
+            if not data:
+                break
+            for r in data:
+                if r.get('email'):
+                    existing.add(r['email'].lower())
+            if len(data) < page_size:
+                break
+            page += 1
+    except Exception:
+        pass
+
+    imported = 0
+    skipped = 0
+    batch = []
+    BATCH_SIZE = 30
+
+    def flush_batch():
+        nonlocal imported
+        if not batch:
+            return
+        for attempt in range(3):
+            try:
+                resp = requests.post(
+                    f"{SUPABASE_URL}/rest/v1/quote_pool",
+                    headers={**AUTH_HEADERS, "Prefer": "return=representation"},
+                    json=batch,
+                    timeout=30
+                )
+                if resp.status_code in (200, 201):
+                    imported += len(batch)
+                    break
+            except Exception:
+                if attempt < 2:
+                    _time.sleep(1)
+        batch.clear()
+
+    for row in rows:
+        email = (row.get(col_map.get('email', ''), '') or '').strip().lower()
+        if not email:
+            continue
+        if email in existing:
+            skipped += 1
+            continue
+        existing.add(email)
+
+        domain = (row.get(col_map.get('domain', ''), '') or '').strip().lower()
+        if not domain and '@' in email:
+            domain = email.split('@')[-1]
+
+        # Parse priority as int
+        priority = 0
+        if 'priority' in col_map:
+            try:
+                priority = int(row.get(col_map['priority'], 0) or 0)
+            except (ValueError, TypeError):
+                priority = 0
+
+        record = {
+            "email": email,
+            "domain": domain,
+            "supplier": (row.get(col_map.get('supplier', ''), '') or '')[:200],
+            "contact_email": (row.get(col_map.get('contact_email', ''), '') or email).lower(),
+            "niche": (row.get(col_map.get('niche', ''), '') or '')[:100],
+            "country": (row.get(col_map.get('country', ''), '') or '')[:50],
+            "traffic": (row.get(col_map.get('traffic', ''), '') or '')[:50],
+            "site_category": (row.get(col_map.get('site_category', ''), '') or '')[:50],
+            "cooperation_type": (row.get(col_map.get('cooperation_type', ''), '') or '')[:50],
+            "price": str(row.get(col_map.get('price', ''), '') or '')[:50],
+            "link_rules": (row.get(col_map.get('link_rules', ''), '') or '')[:200],
+            "permanence": (row.get(col_map.get('permanence', ''), '') or '')[:50],
+            "content": (row.get(col_map.get('content', ''), '') or '')[:500],
+            "tat": (row.get(col_map.get('tat', ''), '') or '')[:50],
+            "payment": (row.get(col_map.get('payment', ''), '') or '')[:50],
+            "discount": (row.get(col_map.get('discount', ''), '') or '')[:50],
+            "additional_services": (row.get(col_map.get('additional_services', ''), '') or '')[:200],
+            "requirements": (row.get(col_map.get('requirements', ''), '') or '')[:500],
+            "reply_content": (row.get(col_map.get('reply_content', ''), '') or '')[:8000],
+            "status": (row.get(col_map.get('status', ''), '') or 'New')[:20],
+            "priority": priority,
+            "notes": (row.get(col_map.get('notes', ''), '') or '')[:500],
+            "discovered_by": user,
+            "discovered_at": now_iso(),
+        }
+        batch.append(record)
+
+        if len(batch) >= BATCH_SIZE:
+            flush_batch()
+
+    flush_batch()
+
+    _log_operation("quote_import", user, "quote_pool", imported,
+                   f"Imported {imported} quotes from file" + (f", skipped {skipped} duplicates" if skipped else ""))
+
+    return jsonify({
+        "imported": imported,
+        "skipped": skipped,
+        "quote_pool_total": db.count("quote_pool"),
+    })
+
+
 # ════════════════════════════════════════════════════════════
 # Comprehensive Stats
 # ════════════════════════════════════════════════════════════
@@ -2078,7 +2277,18 @@ tr:last-child td{border-bottom:none}
     <a class="btn" href="/api/quote/export" target="_blank">Export CSV</a>
     <label style="font-size:12px;color:var(--muted)">My Name</label><input id="q-user" placeholder="your name" style="width:100px" onchange="saveUserName()">
     <button class="btn green" onclick="importARepliesToQuotes()">Import A-class replies</button>
+    <button class="btn" onclick="toggleQuoteImport()">Import from File</button>
     <span id="quote-import-result" style="font-size:12px;color:var(--muted)"></span>
+  </div>
+  <!-- Quote Import panel (hidden by default) -->
+  <div id="quote-import-panel" style="display:none;margin-bottom:16px;padding:14px;background:var(--card);border:0.5px solid var(--border);border-radius:10px">
+    <div style="font-size:13px;font-weight:500;margin-bottom:8px">Import Quotes (Excel/CSV). Supports: Domain, Supplier, Email, Niche, Country, Traffic, Type, Price, Link Rules, Permanence, Content, TAT, Payment, Discount, etc.</div>
+    <label style="cursor:pointer">
+      <input type="file" id="quote-import-file" accept=".xlsx,.csv" style="display:none" onchange="handleQuoteUpload(this)">
+      <span class="btn" style="display:inline-block">Upload File</span>
+    </label>
+    <button class="btn" style="font-size:11px" onclick="downloadQuoteTemplate()">Download Template</button>
+    <span id="quote-import-file-result" style="font-size:12px;color:var(--muted)"></span>
   </div>
   <div style="overflow-x:auto">
   <table id="quote-table"><tr>
@@ -2632,6 +2842,40 @@ async function importARepliesToQuotes(){
       loadQuoteTable();loadStats();
     }
   }catch(e){result.textContent='Network error';alert('Import failed: '+e.message);}
+}
+
+// ── Quote Pool file import ──
+function toggleQuoteImport(){
+  const p=document.getElementById('quote-import-panel');
+  p.style.display=p.style.display==='none'?'block':'none';
+}
+function downloadQuoteTemplate(){
+  const headers='\uFEFFEmail,Domain,Supplier,Contact Email,Niche,Country,Traffic,Site Category,Cooperation Type,Price,Link Rules,Permanence,Content,TAT,Payment,Discount,Additional Services,Requirements,Reply Content,Status,Notes,Priority\n';
+  const sample='example@domain.com,domain.com,Supplier Name,contact@domain.com,Technology,USA,50K,News,Guest Post,$100,DoFollow,Permanent,500 words,3-5 days,PayPal,10% off,SEO audit,Original content required,Thanks for reaching out...,New,Initial contact,1\n';
+  const blob=new Blob([headers+sample],{type:'text/csv;charset=utf-8'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='quote_import_template.csv';a.click();
+}
+async function handleQuoteUpload(input){
+  const user=getUserName();
+  if(!user){alert('Please enter your name in "My Name" field first');return;}
+  if(!input.files||!input.files[0])return;
+  const file=input.files[0];
+  const result=document.getElementById('quote-import-file-result');
+  result.textContent='Uploading...';
+  const form=new FormData();
+  form.append('file',file);
+  form.append('user',user);
+  try{
+    const r=await fetch(API+'/api/quote/import',{method:'POST',body:form});
+    const data=await r.json();
+    if(data.error){result.textContent='Error: '+data.error;alert(data.error);}
+    else{
+      result.textContent='OK: imported '+data.imported+', skipped '+data.skipped+' duplicates';
+      alert('Imported '+data.imported+' quotes'+(data.skipped?' (skipped '+data.skipped+' duplicates)':''));
+      loadQuoteTable();loadStats();
+    }
+  }catch(e){result.textContent='Network error';alert('Upload failed: '+e.message);}
+  input.value='';
 }
 
 // ── Reply Pool import ──
