@@ -2146,34 +2146,43 @@ function esc(s){return String(s||'').replace(/</g,'&lt;').slice(0,80)}
 
 // ── User name via localStorage ──
 function getUserName(){
-  const el=document.getElementById('d-user');
-  let name=el.value.trim();
+  const ids=['d-user','e-user','r-user','q-user'];
+  let name='';
+  for(const id of ids){
+    const el=document.getElementById(id);
+    if(el && el.value.trim()){ name=el.value.trim(); break; }
+  }
   if(!name) name=localStorage.getItem('shared_pool_user')||'';
   if(name){
-    el.value=name;
-    const eu=document.getElementById('e-user'); if(eu) eu.value=name;
-    const ru=document.getElementById('r-user'); if(ru) ru.value=name;
-    const qu=document.getElementById('q-user'); if(qu) qu.value=name;
+    for(const id of ids){
+      const el=document.getElementById(id);
+      if(el) el.value=name;
+    }
   }
   return name;
 }
 function saveUserName(){
-  const name=document.getElementById('d-user').value.trim();
+  const ids=['d-user','e-user','r-user','q-user'];
+  let name='';
+  for(const id of ids){
+    const el=document.getElementById(id);
+    if(el && el.value.trim()){ name=el.value.trim(); break; }
+  }
   if(name){
     localStorage.setItem('shared_pool_user',name);
-    const eu=document.getElementById('e-user'); if(eu) eu.value=name;
-    const ru=document.getElementById('r-user'); if(ru) ru.value=name;
-    const qu=document.getElementById('q-user'); if(qu) qu.value=name;
+    for(const id of ids){
+      const el=document.getElementById(id);
+      if(el) el.value=name;
+    }
   }
 }
 // Load saved user name on page load
 (function(){
   const saved=localStorage.getItem('shared_pool_user');
   if(saved){
-    const du=document.getElementById('d-user'); if(du) du.value=saved;
-    const eu=document.getElementById('e-user'); if(eu) eu.value=saved;
-    const ru=document.getElementById('r-user'); if(ru) ru.value=saved;
-    const qu=document.getElementById('q-user'); if(qu) qu.value=saved;
+    ['d-user','e-user','r-user','q-user'].forEach(id=>{
+      const el=document.getElementById(id); if(el) el.value=saved;
+    });
   }
 })();
 
