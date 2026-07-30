@@ -2322,7 +2322,7 @@ function renderLogPage() {
   }
 
   // Build user dropdown from filtered logs, exclude test/system entries
-  const TEST_RE = /test|system|demo|unknown|admin@/i;
+  const TEST_RE = /test|system|demo|unknown|admin@|autolink/i;
   const filteredUsers = [...new Set(logs.map(l => l.user).filter(u => u && !TEST_RE.test(u)))].sort();
   const sel = document.getElementById('log-user-filter');
   const oldVal = sel.value;
