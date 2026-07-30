@@ -9,7 +9,7 @@ Four Pools:
   Domain Pool  — domain_pool table      (161K+ domains)
   Email Pool   — email_pool table        (send queue, bounce tracking)
   Reply Pool   — reply_pool table        (inbound replies, A/B/C classification)
-  Price Pool   — quote_pool table        (multi-supplier quotes, negotiation)
+  Quote Pool  — quote_pool table        (detailed quotes from A-class replies)
 
 Quick Start:
   1. Edit config.py with your SUPABASE_URL + SUPABASE_ANON_KEY
@@ -1262,88 +1262,254 @@ def reply_update_status():
 
 
 # ════════════════════════════════════════════════════════════
-# Price Pool API (→ quote_pool table)
+# Quote Pool API (→ quote_pool table)
 # ════════════════════════════════════════════════════════════
 
 @app.route("/api/price/add", methods=["POST"])
-def price_add():
-    """Add a quote."""
+@app.route("/api/quote/add", methods=["POST"])
+def quote_add():
+    """Add a quote record."""
     data = request.get_json(force=True)
     payload = {
+        "email": data.get("email", ""),
         "domain": data.get("domain", ""),
         "supplier": data.get("supplier", ""),
         "contact_email": data.get("contact_email", ""),
-        "price": data.get("price"),
-        "currency": data.get("currency", "USD"),
-        "link_type": data.get("link_type", ""),
-        "source": data.get("source", "manual"),
+        "niche": data.get("niche", ""),
+        "country": data.get("country", ""),
+        "traffic": data.get("traffic", ""),
+        "site_category": data.get("site_category", ""),
+        "cooperation_type": data.get("cooperation_type", ""),
+        "price": data.get("price", ""),
+        "link_rules": data.get("link_rules", ""),
+        "permanence": data.get("permanence", ""),
+        "content": data.get("content", ""),
+        "tat": data.get("tat", ""),
+        "payment": data.get("payment", ""),
+        "discount": data.get("discount", ""),
+        "additional_services": data.get("additional_services", ""),
+        "requirements": data.get("requirements", ""),
+        "reply_id": data.get("reply_id"),
+        "reply_content": data.get("reply_content", ""),
+        "status": data.get("status", "New"),
+        "priority": data.get("priority", 0),
         "notes": data.get("notes", ""),
-        "status": data.get("status", "pending"),
+        "discovered_by": data.get("discovered_by", "manual"),
     }
     resp, result = db.insert("quote_pool", payload)
     return jsonify({"result": "created"})
 
 
 @app.route("/api/price/list", methods=["GET"])
-def price_list():
-    """List quotes."""
+@app.route("/api/quote/list", methods=["GET"])
+def quote_list():
+    """List quotes with optional filters."""
     domain = request.args.get("domain", "")
-    limit = min(int(request.args.get("limit", 100)), 5000)
+    status = request.args.get("status", "")
+    niche = request.args.get("niche", "")
+    limit = min(int(request.args.get("limit", 100)), 1000)
 
     filters = {}
     if domain:
         filters["domain"] = domain
+    if status:
+        filters["status"] = status
+    if niche:
+        filters["niche"] = niche
 
     quotes = db.select(
         "quote_pool",
         select="*",
         filters=filters,
         limit=limit,
-        order="created_at",
+        order="discovered_at",
         ascending=False,
     )
-    return jsonify({"prices": quotes or []})
+    return jsonify({"quotes": quotes or []})
 
 
 @app.route("/api/price/stats", methods=["GET"])
-def price_stats():
-    """Price pool statistics."""
+@app.route("/api/quote/stats", methods=["GET"])
+def quote_stats():
+    """Quote pool statistics."""
     total = db.count("quote_pool")
     suppliers = 0
     if total > 0:
         quotes = db.select("quote_pool", select="supplier", limit=5000)
         suppliers = len(set(q.get("supplier") for q in quotes if q.get("supplier")))
 
+    # Count by status
+    status_counts = {}
+    if total > 0:
+        quotes = db.select("quote_pool", select="status", limit=5000)
+        from collections import Counter
+        status_counts = dict(Counter(q.get("status") for q in quotes if q.get("status")))
+
     return jsonify({
         "total": total,
         "suppliers": suppliers,
         "today_new": 0,
-        "avg_price": 0,
+        "by_status": status_counts,
     })
 
 
 @app.route("/api/price/export", methods=["GET"])
-def price_export():
+@app.route("/api/quote/export", methods=["GET"])
+def quote_export():
     """Export quotes as CSV."""
     quotes = db.select("quote_pool", select="*", limit=10000,
-                       order="created_at", ascending=False)
+                       order="discovered_at", ascending=False)
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["domain", "supplier", "contact_email", "price", "currency",
-                     "link_type", "source", "status", "notes", "created_at"])
+    writer.writerow(["domain", "email", "supplier", "contact_email", "niche", "country",
+                     "traffic", "cooperation_type", "price", "link_rules", "permanence",
+                     "content", "tat", "payment", "discount", "additional_services",
+                     "requirements", "status", "notes", "discovered_at"])
     for q in (quotes or []):
         writer.writerow([
-            q.get("domain", ""), q.get("supplier", ""), q.get("contact_email", ""),
-            q.get("price", ""), q.get("currency", ""), q.get("link_type", ""),
-            q.get("source", ""), q.get("status", ""), q.get("notes", ""),
-            safe_str(q.get("created_at", ""))[:19],
+            q.get("domain", ""), q.get("email", ""), q.get("supplier", ""),
+            q.get("contact_email", ""), q.get("niche", ""), q.get("country", ""),
+            q.get("traffic", ""), q.get("cooperation_type", ""), q.get("price", ""),
+            q.get("link_rules", ""), q.get("permanence", ""), q.get("content", ""),
+            q.get("tat", ""), q.get("payment", ""), q.get("discount", ""),
+            q.get("additional_services", ""), q.get("requirements", ""),
+            q.get("status", ""), q.get("notes", ""),
+            safe_str(q.get("discovered_at", ""))[:19],
         ])
 
     return Response(
         output.getvalue(),
         mimetype="text/csv",
-        headers={"Content-Disposition": "attachment; filename=price_pool_export.csv"}
+        headers={"Content-Disposition": "attachment; filename=quote_pool_export.csv"}
     )
+
+
+@app.route("/api/quote/import-a-replies", methods=["POST"])
+def quote_import_a_replies():
+    """
+    从 reply_pool A类回复导入到 quote_pool。
+    每条回复作为 quote 记录，reply_content 完整保留供人工解析。
+    已导入的(email)不会重复导入。
+    """
+    user = request.form.get("user", "unknown").strip()
+    force = request.form.get("force", "") == "1"  # force re-import all
+
+    # Get all A类 replies
+    page, page_size = 0, 1000
+    all_replies = []
+    while True:
+        resp = requests.get(
+            f"{SUPABASE_URL}/rest/v1/reply_pool?category=eq.A&select=*&limit={page_size}&offset={page*page_size}",
+            headers=AUTH_HEADERS,
+            timeout=30
+        )
+        if resp.status_code != 200:
+            break
+        data = resp.json()
+        if not data:
+            break
+        all_replies.extend(data)
+        if len(data) < page_size:
+            break
+        page += 1
+
+    # Get existing quote emails
+    existing_emails = set()
+    page = 0
+    while True:
+        resp = requests.get(
+            f"{SUPABASE_URL}/rest/v1/quote_pool?select=email&limit={page_size}&offset={page*page_size}",
+            headers=AUTH_HEADERS,
+            timeout=30
+        )
+        if resp.status_code != 200:
+            break
+        data = resp.json()
+        if not data:
+            break
+        for r in data:
+            if r.get("email"):
+                existing_emails.add(r["email"].lower())
+        if len(data) < page_size:
+            break
+        page += 1
+
+    imported = 0
+    skipped = 0
+    batch = []
+    BATCH_SIZE = 30
+
+    def flush():
+        nonlocal imported
+        if not batch:
+            return
+        for attempt in range(3):
+            try:
+                resp = requests.post(
+                    f"{SUPABASE_URL}/rest/v1/quote_pool",
+                    headers={**AUTH_HEADERS, "Prefer": "return=representation"},
+                    json=batch,
+                    timeout=30
+                )
+                if resp.status_code in (200, 201):
+                    imported += len(batch)
+                    break
+            except Exception:
+                if attempt < 2:
+                    _time.sleep(1)
+        batch.clear()
+
+    for reply in all_replies:
+        email = (reply.get("email") or "").lower()
+        if not email:
+            continue
+        if not force and email in existing_emails:
+            skipped += 1
+            continue
+        existing_emails.add(email)
+
+        batch.append({
+            "email": email,
+            "domain": (reply.get("domain") or email.split("@")[-1]).lower(),
+            "supplier": (reply.get("supplier") or "")[:200],
+            "contact_email": reply.get("contact_email") or email,
+            "niche": "",
+            "country": "",
+            "traffic": "",
+            "site_category": "",
+            "cooperation_type": "",
+            "price": "",
+            "link_rules": "",
+            "permanence": "",
+            "content": "",
+            "tat": "",
+            "payment": "",
+            "discount": "",
+            "additional_services": "",
+            "requirements": "",
+            "reply_id": reply.get("reply_id"),
+            "reply_content": (reply.get("reply_content") or "")[:8000],
+            "status": "New",
+            "priority": 0,
+            "notes": f"Imported from A-class reply by {user}",
+            "discovered_by": user,
+            "discovered_at": now_iso(),
+        })
+
+        if len(batch) >= BATCH_SIZE:
+            flush()
+
+    flush()
+
+    _log_operation("quote_import", user, "quote_pool", imported,
+                   f"Imported {imported} A-class replies" + (f", skipped {skipped} duplicates" if skipped else ""))
+
+    return jsonify({
+        "imported": imported,
+        "skipped": skipped,
+        "total_a_replies": len(all_replies),
+        "quote_pool_total": db.count("quote_pool"),
+    })
 
 
 # ════════════════════════════════════════════════════════════
@@ -1458,9 +1624,9 @@ def get_stats():
             "reply_c": reply_c,
             "reply_today": 0,
             "reply_a_today": 0,
-            "price_total": quote_total,
-            "price_today_new": 0,
-            "price_suppliers": 0,
+            "quote_total": quote_total,
+            "quote_today_new": 0,
+            "quote_suppliers": 0,
         }
 
     return jsonify(_cached("stats", ttl_sec=60, fn=_fetch))
@@ -1806,7 +1972,7 @@ tr:last-child td{border-bottom:none}
   <div class="tab active" onclick="switchTab('domain')">Domain Pool</div>
   <div class="tab" onclick="switchTab('email')">Email Pool</div>
   <div class="tab" onclick="switchTab('reply')">Reply Pool</div>
-  <div class="tab" onclick="switchTab('price')">Price Pool</div>
+  <div class="tab" onclick="switchTab('quote')">Quote Pool</div>
   <div class="tab" onclick="switchTab('log')">Operation Log</div>
 </div>
 
@@ -1905,13 +2071,21 @@ tr:last-child td{border-bottom:none}
   <table id="reply-table"><tr><th>Email</th><th>Domain</th><th>Category</th><th>Status</th><th>Supplier</th><th>Reply Time</th><th>Content</th></tr></table>
 </div>
 
-<!-- Price Pool -->
-<div class="page" id="page-price">
-  <div class="cards" id="price-cards"></div>
+<!-- Quote Pool -->
+<div class="page" id="page-quote">
+  <div class="cards" id="quote-cards"></div>
   <div class="actions">
-    <a class="btn" href="/api/price/export" target="_blank">Export CSV</a>
+    <a class="btn" href="/api/quote/export" target="_blank">Export CSV</a>
+    <label style="font-size:12px;color:var(--muted)">My Name</label><input id="q-user" placeholder="your name" style="width:100px" onchange="saveUserName()">
+    <button class="btn green" onclick="importARepliesToQuotes()">Import A-class replies</button>
+    <span id="quote-import-result" style="font-size:12px;color:var(--muted)"></span>
   </div>
-  <table id="price-table"><tr><th>Domain</th><th>Supplier</th><th>Contact</th><th>Price</th><th>Currency</th><th>Type</th><th>Status</th><th>Created</th></tr></table>
+  <div style="overflow-x:auto">
+  <table id="quote-table"><tr>
+    <th>Domain</th><th>Supplier</th><th>Country</th><th>Type</th><th>Price</th>
+    <th>Link Rules</th><th>Permanence</th><th>TAT</th><th>Status</th>
+  </tr></table>
+  </div>
 </div>
 
 <!-- Operation Log -->
@@ -1924,7 +2098,7 @@ tr:last-child td{border-bottom:none}
     <button class="btn green" id="log-pool-domain" onclick="setLogPoolFilter('domain')">Domain Pool</button>
     <button class="btn amber" id="log-pool-email" onclick="setLogPoolFilter('email')">Email Pool</button>
     <button class="btn teal" id="log-pool-reply" onclick="setLogPoolFilter('reply')">Reply Pool</button>
-    <button class="btn purple" id="log-pool-price" onclick="setLogPoolFilter('price')">Price Pool</button>
+    <button class="btn purple" id="log-pool-quote" onclick="setLogPoolFilter('quote')">Quote Pool</button>
   </div>
 
   <!-- 二级分类: Action (动态显示) -->
@@ -1979,6 +2153,7 @@ function getUserName(){
     el.value=name;
     const eu=document.getElementById('e-user'); if(eu) eu.value=name;
     const ru=document.getElementById('r-user'); if(ru) ru.value=name;
+    const qu=document.getElementById('q-user'); if(qu) qu.value=name;
   }
   return name;
 }
@@ -1988,6 +2163,7 @@ function saveUserName(){
     localStorage.setItem('shared_pool_user',name);
     const eu=document.getElementById('e-user'); if(eu) eu.value=name;
     const ru=document.getElementById('r-user'); if(ru) ru.value=name;
+    const qu=document.getElementById('q-user'); if(qu) qu.value=name;
   }
 }
 // Load saved user name on page load
@@ -1997,6 +2173,7 @@ function saveUserName(){
     const du=document.getElementById('d-user'); if(du) du.value=saved;
     const eu=document.getElementById('e-user'); if(eu) eu.value=saved;
     const ru=document.getElementById('r-user'); if(ru) ru.value=saved;
+    const qu=document.getElementById('q-user'); if(qu) qu.value=saved;
   }
 })();
 
@@ -2087,13 +2264,13 @@ async function saveTeam(){
 }
 
 function switchTab(name){
-  const tabs=['domain','email','reply','price','log'];
+  const tabs=['domain','email','reply','quote','log'];
   document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',tabs[i]===name));
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.getElementById('page-'+name).classList.add('active');
   if(name==='email')loadEmailTable();
   if(name==='reply')loadReplyTable('');
-  if(name==='price')loadPriceTable();
+  if(name==='quote')loadQuoteTable();
   if(name==='log')loadLogTable('');
 }
 
@@ -2114,8 +2291,8 @@ async function loadStats(){
       {l:'A class',v:s.reply_a,c:'green'},{l:'B class',v:s.reply_b,c:'amber'},
       {l:'C class',v:s.reply_c,c:'purple'},
     ].map(c=>`<div class="card"><div class="label">${c.l}</div><div class="value ${c.c}">${fmt(c.v)}</div></div>`).join('');
-    document.getElementById('price-cards').innerHTML=[
-      {l:'Total quotes',v:s.price_total,c:'blue'},{l:'Today new',v:s.price_today_new,c:'amber'},
+    document.getElementById('quote-cards').innerHTML=[
+      {l:'Total quotes',v:s.quote_total,c:'blue'},{l:'Today new',v:s.quote_today_new,c:'amber'},
     ].map(c=>`<div class="card"><div class="label">${c.l}</div><div class="value ${c.c}">${fmt(c.v)}</div></div>`).join('');
     document.getElementById('refresh-msg').textContent='Updated: '+new Date().toLocaleTimeString('zh-CN');
   }catch(e){document.getElementById('refresh-msg').textContent='Error: '+e.message}
@@ -2251,12 +2428,12 @@ async function refreshLogs() {
   const domainCount = LOG.allLogs.filter(l => l.type && l.type.startsWith('domain_')).length;
   const emailCount = LOG.allLogs.filter(l => l.type && l.type.startsWith('email_')).length;
   const replyCount = LOG.allLogs.filter(l => l.type && l.type.startsWith('reply_')).length;
-  const priceCount = LOG.allLogs.filter(l => l.type && l.type.startsWith('price_')).length;
+  const quoteCount = LOG.allLogs.filter(l => l.type && (l.type.startsWith('quote_') || l.type.startsWith('price_'))).length;
   document.getElementById('log-cards').innerHTML = [
     { l: 'Domain Pool', v: domainCount, c: 'blue' },
     { l: 'Email Pool', v: emailCount, c: 'amber' },
     { l: 'Reply Pool', v: replyCount, c: 'green' },
-    { l: 'Price Pool', v: priceCount, c: 'purple' },
+    { l: 'Quote Pool', v: quoteCount, c: 'purple' },
   ].map(c => `<div class="card"><div class="label">${c.l}</div><div class="value ${c.c}">${fmt(c.v)}</div></div>`).join('');
 
   renderLogPage();
@@ -2310,7 +2487,11 @@ function renderLogPage() {
 
   // Apply pool filter (first-level)
   if (LOG.poolFilter) {
-    logs = logs.filter(l => l.type && l.type.startsWith(LOG.poolFilter + '_'));
+    if (LOG.poolFilter === 'quote') {
+      logs = logs.filter(l => l.type && (l.type.startsWith('quote_') || l.type.startsWith('price_')));
+    } else {
+      logs = logs.filter(l => l.type && l.type.startsWith(LOG.poolFilter + '_'));
+    }
   }
 
   // Apply action filter (second-level: import/export/distribute)
@@ -2408,14 +2589,40 @@ async function loadReplyTable(cat){
     </tr>`).join('');
 }
 
-async function loadPriceTable(){
-  const r=await fetch(API+'/api/price/list?limit=100').then(r=>r.json());
-  document.getElementById('price-table').innerHTML='<tr><th>Domain</th><th>Supplier</th><th>Contact</th><th>Price</th><th>Currency</th><th>Type</th><th>Status</th><th>Created</th></tr>'+
-    (r.prices||[]).map(p=>`<tr>
-      <td>${esc(p.domain)}</td><td>${esc(p.supplier)}</td><td>${esc(p.contact_email)}</td>
-      <td>${p.price||'-'}</td><td>${p.currency||'-'}</td><td>${esc(p.link_type)}</td>
-      <td>${esc(p.status)}</td><td>${(p.created_at||'').slice(0,16)}</td>
+async function loadQuoteTable(){
+  const r=await fetch(API+'/api/quote/list?limit=200').then(r=>r.json());
+  document.getElementById('quote-table').innerHTML='<tr><th>Domain</th><th>Supplier</th><th>Country</th><th>Type</th><th>Price</th><th>Link Rules</th><th>Permanence</th><th>TAT</th><th>Status</th></tr>'+
+    (r.quotes||[]).map(q=>`<tr>
+      <td><a href="http://${esc(q.domain)}" target="_blank">${esc(q.domain)}</a></td>
+      <td>${esc(q.supplier)}</td>
+      <td>${esc(q.country)}</td>
+      <td>${esc(q.cooperation_type)}</td>
+      <td>${esc(q.price)}</td>
+      <td>${esc(q.link_rules)}</td>
+      <td>${esc(q.permanence)}</td>
+      <td>${esc(q.tat)}</td>
+      <td><span class="status-${q.status||'New'}">${q.status||'New'}</span></td>
     </tr>`).join('');
+}
+
+// ── Import A-class replies to Quote Pool ──
+async function importARepliesToQuotes(){
+  const user=getUserName();
+  if(!user){alert('Please enter your name in "My Name" field first');return;}
+  if(!confirm('Import all A-class replies (671 records) to Quote Pool?\\nExisting quotes (by email) will be skipped.'))return;
+  const result=document.getElementById('quote-import-result');
+  result.textContent='Importing...';
+  try{
+    const form=new FormData();
+    form.append('user',user);
+    const r=await fetch(API+'/api/quote/import-a-replies',{method:'POST',body:form});
+    const data=await r.json();
+    if(data.error){result.textContent='Error: '+data.error;alert(data.error);}
+    else{
+      result.textContent='OK: '+data.imported+' imported, '+data.skipped+' skipped (quote pool total: '+data.quote_pool_total+')';
+      loadQuoteTable();loadStats();
+    }
+  }catch(e){result.textContent='Network error';alert('Import failed: '+e.message);}
 }
 
 // ── Reply Pool import ──

@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AutoLink OS — 统一监控面板</title>
+<style>
+:root{
+  --bg:#0b1120;--card-bg:#111827;--card-border:#1e293b;
+  --text:#e2e8f0;--text2:#94a3b8;--text3:#64748b;
+  --blue:#3b82f6;--green:#22c55e;--amber:#f59e0b;--coral:#ef4444;--purple:#a855f7;--teal:#14b8a6;--cyan:#06b6d4;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+.container{max-width:1400px;margin:0 auto;padding:20px 28px}
+
+/* Header */
+.header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.header-left{display:flex;align-items:center;gap:12px}
+.header-logo{width:32px;height:32px;background:linear-gradient(135deg,var(--blue),var(--purple));border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:700;color:#fff}
+.header h1{font-size:22px;font-weight:600;letter-spacing:-0.5px}
+.header .subtitle{font-size:12px;color:var(--text2);margin-top:2px}
+.status-badge{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.25);border-radius:20px;font-size:12px;color:var(--green);font-weight:500}
+.status-badge .dot{width:7px;height:7px;border-radius:50%;background:var(--green);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+
+/* Nav */
+.nav{display:flex;gap:6px;margin-bottom:20px;flex-wrap:wrap}
+.nav-btn{padding:6px 16px;border-radius:20px;font-size:12px;font-weight:500;background:transparent;color:var(--text3);border:1px solid transparent;cursor:pointer;transition:all .2s;font-family:inherit}
+.nav-btn:hover{color:var(--text);border-color:var(--card-border)}
+.nav-btn.active{background:var(--blue);color:#fff;border-color:var(--blue)}
+
+/* Warning */
+.warning-banner{display:none;align-items:center;gap:10px;padding:12px 16px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.2);border-radius:10px;color:var(--amber);font-size:12px;margin-bottom:16px}
+.warning-banner.show{display:flex}
+
+/* Cards */
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:20px}
+.card{background:var(--card-bg);border:1px solid var(--card-border);border-radius:12px;padding:16px}
+.card .label{font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px}
+.card .value{font-size:24px;font-weight:700;line-height:1.2}
+.card .sub{font-size:11px;color:var(--text3);margin-top:4px}
+.value.blue{color:var(--blue)}.value.green{color:var(--green)}.value.amber{color:var(--amber)}
+.value.coral{color:var(--coral)}.value.purple{color:var(--purple)}.value.cyan{color:var(--cyan)}
+
+/* Section */
+.section{background:var(--card-bg);border:1px solid var(--card-border);border-radius:12px;padding:18px;margin-bottom:16px}
+.section-title{font-size:14px;font-weight:600;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+
+/* Table */
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{text-align:left;padding:8px 10px;color:var(--text3);font-weight:500;border-bottom:1px solid var(--card-border);white-space:nowrap}
+td{padding:8px 10px;border-bottom:1px solid rgba(30,41,59,.5);vertical-align:middle}
+tr:hover td{background:rgba(255,255,255,.02)}
+.progress-bar{display:inline-block;width:80px;height:6px;background:rgba(255,255,255,.08);border-radius:3px;vertical-align:middle;margin-right:6px;overflow:hidden}
+.progress-fill{height:100%;border-radius:3px;display:block}
+.fill-blue{background:var(--blue)}.fill-green{background:var(--green)}.fill-amber{background:var(--amber)}
+
+/* Badge */
+.badge{display:inline-flex;align-items:center;padding:3px 10px;border-radius:12px;font-size:11px;font-weight:500}
+.badge-ok{background:rgba(34,197,94,.12);color:var(--green)}.badge-warn{background:rgba(245,158,11,.12);color:var(--amber)}
+.badge-err{background:rgba(239,68,68,.12);color:var(--coral)}.badge-info{background:rgba(59,130,246,.12);color:var(--blue)}
+.badge-idle{background:rgba(100,116,139,.15);color:var(--text3)}
+
+/* Provider dot */
+.prov-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
+.prov-tencent{background:#1a73e8}.prov-aliyun{background:#ff6a00}.prov-zoho{background:#e42527}.prov-feishu{background:#3370ff}
+
+/* Sub-nav */
+.sub-nav{display:flex;gap:6px;margin-bottom:14px}
+.sub-nav-btn{padding:4px 12px;border-radius:14px;font-size:11px;font-weight:500;background:transparent;color:var(--text3);border:1px solid var(--card-border);cursor:pointer;font-family:inherit}
+.sub-nav-btn:hover{color:var(--text)}
+.sub-nav-btn.active{background:rgba(59,130,246,.15);color:var(--blue);border-color:rgba(59,130,246,.3)}
+
+/* Tab content */
+.tab-content{display:none}
+.tab-content.active{display:block}
+
+/* Grid */
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:900px){.grid-2{grid-template-columns:1fr}}
+
+/* Logs */
+.log-list{max-height:320px;overflow-y:auto;font-size:11px;line-height:1.6}
+.log-item{padding:4px 0;border-bottom:1px solid rgba(30,41,59,.3);display:flex;gap:10px}
+.log-time{color:var(--text3);white-space:nowrap;font-size:10px}
+.log-type{padding:1px 6px;border-radius:4px;font-size:10px;font-weight:500;background:rgba(59,130,246,.12);color:var(--blue)}
+.log-type.sys{background:rgba(148,163,184,.12);color:var(--text2)}
+.log-type.warn{background:rgba(245,158,11,.12);color:var(--amber)}
+.log-type.err{background:rgba(239,68,68,.12);color:var(--coral)}
+.log-msg{color:var(--text2);word-break:break-all}
+
+/* Footer */
+.footer{display:flex;justify-content:space-between;align-items:center;margin-top:12px;font-size:11px;color:var(--text3)}
+.footer button{padding:4px 12px;border-radius:6px;border:1px solid var(--card-border);background:transparent;color:var(--text2);cursor:pointer;font-family:inherit;font-size:11px}
+.footer button:hover{color:var(--text);border-color:var(--text3)}
+
+/* Loading */
+.loading{text-align:center;padding:40px;color:var(--text3);font-size:12px}
+</style>
+</head>
+<body>
+<div class="container">
+
+<!-- Header -->
+<div class="header">
+  <div class="header-left">
+    <div class="header-logo">A</div>
+    <div>
+      <h1>AutoLink OS</h1>
+      <div class="subtitle" id="header-sub">外链采购全自动化系统 · 监控面板</div>
+    </div>
+  </div>
+  <div class="status-badge" id="sys-status"><span class="dot"></span>系统运行中</div>
+</div>
+
+<!-- Warning -->
+<div class="warning-banner" id="warning-banner"></div>
+
+<!-- Nav -->
+<div class="nav" id="main-nav">
+  <button class="nav-btn active" data-tab="overview">总览</button>
+  <button class="nav-btn" data-tab="send">发信监控</button>
+  <button class="nav-btn" data-tab="reply">回复中心</button>
+  <button class="nav-btn" data-tab="pool">Shared Pool</button>
+  <button class="nav-btn" data-tab="logs">系统日志</button>
+</div>
+
+<!-- ===== Tab: 总览 ===== -->
+<div class="tab-content active" id="tab-overview">
+  <div class="cards" id="top-cards"></div>
+
+  <div class="grid-2">
+    <div class="section">
+      <div class="section-title">Pipeline 状态</div>
+      <table id="pipeline-table"></table>
+    </div>
+    <div class="section">
+      <div class="section-title">实时工作记录</div>
+      <div class="log-list" id="log-list"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Tab: 发信监控 ===== -->
+<div class="tab-content" id="tab-send">
+  <!-- Provider sub-nav -->
+  <div class="sub-nav" id="send-sub-nav">
+    <button class="sub-nav-btn active" data-prov="all">全部</button>
+    <button class="sub-nav-btn" data-prov="腾讯">腾讯企业邮</button>
+    <button class="sub-nav-btn" data-prov="阿里">阿里企业邮</button>
+    <button class="sub-nav-btn" data-prov="Zoho">Zoho</button>
+    <button class="sub-nav-btn" data-prov="飞书">飞书</button>
+  </div>
+
+  <!-- Pending info -->
+  <div class="section" style="padding:12px 16px;margin-bottom:14px">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+      <div><span class="badge badge-info" id="pending-badge">待发队列</span> <span id="pending-info" style="color:var(--text2);font-size:12px">加载中...</span></div>
+      <div style="font-size:11px;color:var(--text3)" id="pending-date-range"></div>
+    </div>
+  </div>
+
+  <!-- Send monitor -->
+  <div class="section">
+    <div class="section-title">实时发送进度</div>
+    <div id="send-monitor" style="font-size:12px;color:var(--text2)">等待数据...</div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">账号列表 <span id="acct-count" style="color:var(--text3);font-weight:400"></span></div>
+    <table id="mail-acct-table"></table>
+  </div>
+</div>
+
+<!-- ===== Tab: 回复中心 ===== -->
+<div class="tab-content" id="tab-reply">
+  <!-- Reply summary cards -->
+  <div class="cards" id="reply-cards"></div>
+
+  <div class="grid-2">
+    <div class="section">
+      <div class="section-title">A 类回复 — 合作意向</div>
+      <table id="reply-a-table"></table>
+    </div>
+    <div class="section">
+      <div class="section-title">B/C 类回复</div>
+      <table id="reply-bc-table"></table>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">抄送跟踪</div>
+    <table id="cc-tracking-table">
+      <tr><th>抄送账号</th><th>目标邮箱</th><th>状态</th><th>时间</th></tr>
+      <tr><td colspan="4" style="text-align:center;color:var(--text3);padding:20px">暂无抄送记录</td></tr>
+    </table>
+  </div>
+</div>
+
+<!-- ===== Tab: Shared Pool ===== -->
+<div class="tab-content" id="tab-pool">
+  <div class="cards" id="sp-cards"></div>
+  <div class="grid-2">
+    <div class="section">
+      <div class="section-title">域名池状态分布</div>
+      <table id="sp-domain-table"></table>
+    </div>
+    <div class="section">
+      <div class="section-title">回复池分类</div>
+      <table id="sp-reply-table"></table>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Tab: 系统日志 ===== -->
+<div class="tab-content" id="tab-logs">
+  <div class="section">
+    <div class="section-title">完整日志</div>
+    <div class="log-list" id="full-log-list"></div>
+  </div>
+</div>
+
+<!-- Footer -->
+<div class="footer">
+  <span id="refresh-time">--</span>
+  <div style="display:flex;gap:8px;align-items:center">
+    <span id="countdown">15s 后刷新</span>
+    <button onclick="refreshAll()">立即刷新</button>
+  </div>
+</div>
+
+</div>
+
+<script>
+const MAISUI_API = 'http://127.0.0.1:8899';
+const SP_API = 'http://127.0.0.1:8765';
+
+let lastMaisuiData = null;
+let lastSpData = null;
+let currentTab = 'overview';
+let currentProv = 'all';
+let logs = [];
+let countdownVal = 15;
+let countdownTimer = null;
+
+function fmt(n){ return (n||0).toLocaleString(); }
+function now(){ return new Date().toLocaleTimeString('zh-CN',{hour12:false}); }
+
+function addLog(type,msg){
+  logs.unshift({t:now(),type,msg});
+  if(logs.length>200) logs.pop();
+  renderLogs();
+}
+function renderLogs(){
+  const html = logs.slice(0,50).map(l=>`<div class="log-item"><span class="log-time">${l.t}</span><span class="log-type ${l.type}">${l.type.toUpperCase()}</span><span class="log-msg">${l.msg}</span></div>`).join('');
+  document.getElementById('log-list').innerHTML = html;
+  document.getElementById('full-log-list').innerHTML = html;
+}
+
+function showWarning(msg){
+  const el = document.getElementById('warning-banner');
+  el.innerHTML = '<span style="font-size:14px">&#9888;</span> '+msg;
+  el.classList.add('show');
+}
+function hideWarning(){ document.getElementById('warning-banner').classList.remove('show'); }
+
+function updateSystemStatus(maisuiErr, spErr){
+  const el = document.getElementById('sys-status');
+  if(maisuiErr && spErr){
+    el.innerHTML = '<span class="dot" style="background:var(--coral);animation:none"></span>双数据源离线';
+    el.style.cssText = 'background:rgba(239,68,68,.12);border-color:rgba(239,68,68,.25);color:var(--coral)';
+  } else if(maisuiErr || spErr){
+    el.innerHTML = '<span class="dot" style="background:var(--amber);animation:none"></span>部分数据源异常';
+    el.style.cssText = 'background:rgba(245,158,11,.12);border-color:rgba(245,158,11,.25);color:var(--amber)';
+  } else {
+    el.innerHTML = '<span class="dot"></span>系统运行中';
+    el.style.cssText = '';
+  }
+}
+
+// ── Tab switching ──
+document.getElementById('main-nav').addEventListener('click', e=>{
+  if(!e.target.classList.contains('nav-btn')) return;
+  document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
+  e.target.classList.add('active');
+  document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
+  document.getElementById('tab-'+e.target.dataset.tab).classList.add('active');
+  currentTab = e.target.dataset.tab;
+  // Re-render if data exists
+  if(lastMaisuiData) renderMailAccounts(lastMaisuiData);
+  if(lastMaisuiData) renderReplies(lastMaisuiData);
+  if(lastSpData) renderSharedPool(lastSpData);
+});
+
+// ── Send provider sub-nav ──
+document.getElementById('send-sub-nav').addEventListener('click', e=>{
+  if(!e.target.classList.contains('sub-nav-btn')) return;
+  document.querySelectorAll('#send-sub-nav .sub-nav-btn').forEach(b=>b.classList.remove('active'));
+  e.target.classList.add('active');
+  currentProv = e.target.dataset.prov;
+  if(lastMaisuiData) renderMailAccounts(lastMaisuiData);
+});
+
+// ── Top cards (overview only) ──
+function renderTopCards(maisui, sp){
+  const todaySent = maisui?.today_sent || 0;
+  const todayBounced = maisui?.today_bounced || 0;
+  const todayReplied = maisui?.today_replied || 0;
+  const totalSent = maisui?.total_sent || 0;
+  const pending = maisui?.pending_count || 0;
+  const domains = sp?.domain_total || 0;
+  const replyA = sp?.reply_a || 0;
+
+  const cards = [
+    {l:'今日发送',v:'+'+todaySent,c:'blue',s:'累计 '+fmt(totalSent)+' 封'},
+    {l:'今日回复',v:'+'+todayReplied,c:'green',s:'A类 '+fmt(replyA)+' 条'},
+    {l:'今日退信',v:'+'+todayBounced,c:'coral',s:'待处理池数据'},
+    {l:'当前待发',v:fmt(pending),c:'amber',s:'待发送邮件队列'},
+    {l:'域名池',v:fmt(domains),c:'purple',s:sp?'共 '+fmt(domains)+' 个域名':'--'},
+    {l:'在线账号',v:maisui?.account_status?.length||0,c:'cyan',s:'发信账号在线'},
+  ];
+  document.getElementById('top-cards').innerHTML = cards.map(c=>
+    `<div class="card"><div class="label">${c.l}</div><div class="value ${c.c}">${c.v}</div><div class="sub">${c.s}</div></div>`
+  ).join('');
+}
+
+// ── Pipeline ──
+const PIPELINE_MODULES = [
+  {id:'demo01',phase:1,name:'Supplier Collector',desc:'多平台域名采集',status:'active'},
+  {id:'demo02',phase:2,name:'Domain Manager',desc:'域名去重与管理',status:'active'},
+  {id:'demo03',phase:3,name:'Maisui Collector',desc:'麦穗邮箱批量提取',status:'active'},
+  {id:'demo04',phase:4,name:'Email Manager',desc:'邮箱清洗去重',status:'active'},
+  {id:'demo05',phase:5,name:'Auto Mail',desc:'开发信自动发送',status:'active'},
+  {id:'demo06',phase:6,name:'Reply Center',desc:'回复检查与分类 (A/B/C)',status:'active'},
+  {id:'demo07',phase:7,name:'Followup Agent',desc:'二轮自动跟进',status:'active'},
+  {id:'demo08',phase:8,name:'Quote Center',desc:'报价管理与谈判追踪',status:'active'},
+];
+
+function renderPipeline(maisui, sp){
+  let rows = PIPELINE_MODULES.map(m=>{
+    let metric = '';
+    switch(m.id){
+      case 'demo01': metric = sp ? `${fmt(sp.domain_total)} 域名` : '--'; break;
+      case 'demo02': metric = sp ? `${fmt(sp.domain_new)} 待处理` : '--'; break;
+      case 'demo03': metric = sp ? `${fmt(sp.email_total||0)} 邮箱` : '--'; break;
+      case 'demo04': metric = sp ? `${fmt(sp.email_unsent||0)} 待发` : '--'; break;
+      case 'demo05': metric = maisui ? `今日 +${maisui.today_sent||0}` : '--'; break;
+      case 'demo06': metric = maisui ? `今日 +${maisui.today_replied||0} 回复` : '--'; break;
+      case 'demo07': metric = maisui ? `${fmt(maisui.followup_sent||0)} 跟进` : '--'; break;
+      case 'demo08': metric = sp ? `${fmt(sp.reply_a||0)} A类` : '--'; break;
+    }
+    return `<tr><td><span style="font-weight:600">${m.name}</span></td><td style="color:var(--text3);font-size:11px">${m.desc}</td><td><span class="badge badge-ok">运行中</span></td><td>${metric}</td></tr>`;
+  }).join('');
+  document.getElementById('pipeline-table').innerHTML = '<tr><th>模块</th><th>职责</th><th>状态</th><th>关键指标</th></tr>' + rows;
+}
+
+// ── Mail Accounts (grouped by provider) ──
+function renderMailAccounts(maisui){
+  if(!maisui) return;
+  const accts = maisui.account_status || [];
+
+  // Pending info
+  const pending = maisui.pending_count || 0;
+  document.getElementById('pending-badge').textContent = '待发队列 ' + fmt(pending) + ' 封';
+  document.getElementById('pending-info').textContent = pending > 10000
+    ? '数据量较大，包含历史积累记录。建议从 Shared Pool 导出后清理旧数据。'
+    : '待发邮件队列正常';
+  document.getElementById('pending-date-range').textContent = '来源: auto_send.db pending_pool';
+
+  // Send monitor (simple progress simulation based on today_sent)
+  const todaySent = maisui.today_sent || 0;
+  const totalAccts = accts.length;
+  const activeAccts = accts.filter(a=>(a.today||0)>0).length;
+  document.getElementById('send-monitor').innerHTML = `
+    <div style="display:flex;gap:20px;flex-wrap:wrap">
+      <div>今日已发送: <b style="color:var(--green)">+${todaySent}</b></div>
+      <div>活跃账号: <b>${activeAccts}</b> / ${totalAccts}</div>
+      <div>待发队列: <b style="color:var(--amber)">${fmt(pending)}</b></div>
+      <div>整体送达率: <b>${((maisui.delivery_rate_today||0)*100).toFixed(1)}%</b></div>
+    </div>
+    <div style="margin-top:10px">
+      <div style="font-size:11px;color:var(--text3);margin-bottom:4px">活跃账号占比</div>
+      <div class="progress-bar" style="width:100%;height:8px"><span class="progress-fill fill-green" style="width:${Math.min(activeAccts/totalAccts*100,100)}%"></span></div>
+      <div style="font-size:11px;color:var(--text3);margin-top:4px">${(activeAccts/totalAccts*100).toFixed(1)}% (${activeAccts}/${totalAccts})</div>
+    </div>
+  `;
+
+  // Filter by provider
+  let filtered = accts;
+  if(currentProv !== 'all'){
+    filtered = accts.filter(a => (a.provider||'') === currentProv);
+  }
+
+  // Sort by today desc
+  const sorted = [...filtered].sort((a,b)=>(b.today||0)-(a.today||0));
+  document.getElementById('acct-count').textContent = `(${sorted.length} 个账号${currentProv!=='all'?' · '+currentProv:''})`;
+
+  document.getElementById('mail-acct-table').innerHTML =
+    '<tr><th>账号</th><th>提供商</th><th>今日</th><th>累计</th><th>退信</th><th>送达率</th><th>状态</th></tr>'+
+    sorted.map(a=>{
+      const rate = a.rate != null ? (a.rate*100).toFixed(1)+'%' : '-';
+      const rateColor = (a.rate||0) >= 0.95 ? 'green' : (a.rate||0) >= 0.80 ? 'amber' : 'coral';
+      const provClass = a.provider==='腾讯'?'prov-tencent':a.provider==='阿里'?'prov-aliyun':a.provider==='飞书'?'prov-feishu':'prov-zoho';
+      const statusClass = a.status_cls==='idle'?'badge-idle':a.status_cls==='active'?'badge-ok':'badge-warn';
+      return `<tr>
+        <td><b>${a.sid||'?'}</b><br><span style="color:var(--text3);font-size:11px">${a.email||''}</span></td>
+        <td><span class="prov-dot ${provClass}"></span>${a.provider||'?'}</td>
+        <td>${a.today||0}</td>
+        <td>${fmt(a.total||0)}</td>
+        <td>${a.bounced||0}</td>
+        <td><span class="progress-bar"><span class="progress-fill ${rateColor==='green'?'fill-green':rateColor==='amber'?'fill-amber':'fill-coral'}" style="width:${Math.min((a.rate||0)*100,100)}%"></span></span><span style="color:var(--${rateColor})">${rate}</span></td>
+        <td><span class="badge ${statusClass}">${a.status_text||a.status||'?'}</span></td>
+      </tr>`;
+    }).join('');
+}
+
+// ── Replies (A/B/C classification) ──
+function renderReplies(maisui){
+  if(!maisui) return;
+
+  // Summary cards
+  const totalReplied = maisui.total_replied || 0;
+  const todayReplied = maisui.today_replied || 0;
+  const totalBounced = maisui.total_bounced || 0;
+
+  // Use Shared Pool data for A/B/C if available
+  let a=0,b=0,c=0;
+  if(lastSpData){
+    a = lastSpData.reply_a || 0;
+    b = lastSpData.reply_b || 0;
+    c = lastSpData.reply_c || 0;
+  } else {
+    // Fallback: use maisui reply classification if available
+    a = maisui.reply_a || 0;
+    b = maisui.reply_b || 0;
+    c = maisui.reply_c || 0;
+  }
+
+  document.getElementById('reply-cards').innerHTML = [
+    {l:'累计回复',v:fmt(totalReplied),c:'green',s:'今日 +'+fmt(todayReplied)},
+    {l:'A 类 — 合作意向',v:fmt(a),c:'blue',s:'高优先级跟进'},
+    {l:'B 类 — 需确认',v:fmt(b),c:'amber',s:'中等优先级'},
+    {l:'C 类 — 无关/拒绝',v:fmt(c),c:'coral',s:'低优先级'},
+    {l:'累计退信',v:fmt(totalBounced),c:'coral',s:'需清理'},
+    {l:'跟进邮件',v:fmt(maisui.followup_sent||0),c:'purple',s:'已发送跟进'},
+  ].map(c=>`<div class="card"><div class="label">${c.l}</div><div class="value ${c.c}">${c.v}</div><div class="sub">${c.s}</div></div>`).join('');
+
+  // A table (placeholder — real data needs reply API)
+  document.getElementById('reply-a-table').innerHTML =
+    '<tr><th>邮箱</th><th>域名</th><th>分类</th><th>时间</th></tr>' +
+    (a>0
+      ? `<tr><td colspan="4" style="text-align:center;color:var(--text3);padding:16px">A 类回复: ${fmt(a)} 条 (数据源: Shared Pool reply_pool)</td></tr>`
+      : '<tr><td colspan="4" style="text-align:center;color:var(--text3);padding:16px">暂无 A 类回复数据</td></tr>');
+
+  document.getElementById('reply-bc-table').innerHTML =
+    '<tr><th>邮箱</th><th>域名</th><th>分类</th><th>时间</th></tr>' +
+    ((b+c)>0
+      ? `<tr><td colspan="4" style="text-align:center;color:var(--text3);padding:16px">B 类: ${fmt(b)} 条 / C 类: ${fmt(c)} 条 (数据源: Shared Pool reply_pool)</td></tr>`
+      : '<tr><td colspan="4" style="text-align:center;color:var(--text3);padding:16px">暂无 B/C 类回复数据</td></tr>');
+}
+
+// ── Shared Pool ──
+function renderSharedPool(sp){
+  if(!sp){ return; }
+
+  document.getElementById('sp-cards').innerHTML = [
+    {l:'域名池总量',v:fmt(sp.domain_total),c:'blue',s:`New ${fmt(sp.domain_new||0)} / Contacted ${fmt(sp.domain_contacted||0)}`},
+    {l:'邮件池',v:fmt(sp.email_total||0),c:'teal',s:`Unsent ${fmt(sp.email_unsent||0)}`},
+    {l:'回复池',v:fmt(sp.reply_total||0),c:'green',s:`A ${fmt(sp.reply_a||0)} / B ${fmt(sp.reply_b||0)} / C ${fmt(sp.reply_c||0)}`},
+    {l:'报价池',v:fmt(sp.quote_total||0),c:'purple',s:'详细报价记录'},
+  ].map(c=>`<div class="card"><div class="label">${c.l}</div><div class="value ${c.c}">${c.v}</div><div class="sub">${c.s}</div></div>`).join('');
+
+  const dTotal = sp.domain_total || 1;
+  const domainStatuses = [
+    {s:'New',v:sp.domain_new||0},{s:'Claimed',v:sp.domain_claimed||0},
+    {s:'Contacted',v:sp.domain_contacted||0},{s:'Replied',v:sp.domain_replied||0},
+  ];
+  document.getElementById('sp-domain-table').innerHTML =
+    '<tr><th>状态</th><th>数量</th><th>占比</th></tr>'+
+    domainStatuses.map(d=>`<tr>
+      <td>${d.s}</td><td>${fmt(d.v)}</td>
+      <td><span class="progress-bar"><span class="progress-fill ${d.s==='New'?'amber':'green'}" style="width:${Math.min(d.v/dTotal*100,100)}%"></span></span>${(d.v/dTotal*100).toFixed(1)}%</td>
+    </tr>`).join('');
+
+  document.getElementById('sp-reply-table').innerHTML =
+    '<tr><th>分类</th><th>数量</th></tr>'+
+    [{s:'Total',v:sp.reply_total||0},{s:'A 类 (合作意向)',v:sp.reply_a||0},
+     {s:'B 类',v:sp.reply_b||0},{s:'C 类',v:sp.reply_c||0},{s:'Unread',v:sp.reply_unread||0}]
+    .map(r=>`<tr><td>${r.s}</td><td>${fmt(r.v)}</td></tr>`).join('');
+}
+
+// ── Refresh ──
+async function refreshAll(){
+  clearInterval(countdownTimer);
+  document.getElementById('countdown').textContent = '刷新中...';
+
+  let maisuiErr = false, spErr = false;
+
+  // Fetch MAISUI (15s timeout)
+  try{
+    const resp = await fetch(MAISUI_API+'/data',{signal:AbortSignal.timeout(15000)});
+    lastMaisuiData = await resp.json();
+    if(lastMaisuiData.error) throw new Error(lastMaisuiData.error);
+    addLog('info','MAISUI 数据刷新: 累计发送 '+fmt(lastMaisuiData.total_sent||0)+' 封');
+  }catch(e){
+    maisuiErr = true;
+    addLog('err','MAISUI 数据源 (port 8899) 连接失败: '+e.message);
+    if(!lastMaisuiData) showWarning('MAISUI 邮件数据源 (port 8899) 连接失败');
+  }
+
+  // Fetch Shared Pool (45s timeout — Supabase free tier is slow)
+  try{
+    const resp = await fetch(SP_API+'/api/stats',{signal:AbortSignal.timeout(45000)});
+    lastSpData = await resp.json();
+    addLog('sys','Shared Pool 数据刷新: '+fmt(lastSpData.domain_total||0)+' 域名, A类 '+fmt(lastSpData.reply_a||0)+' 条');
+  }catch(e){
+    spErr = true;
+    addLog('err','Shared Pool 数据源 (port 8765) 连接失败: '+e.message);
+    if(!lastSpData) showWarning('Shared Pool 数据源 (port 8765) 连接失败');
+  }
+
+  updateSystemStatus(maisuiErr, spErr);
+  if(!maisuiErr && !spErr) hideWarning();
+
+  // Render current tab
+  if(currentTab==='overview' || currentTab==='send' || currentTab==='reply'){
+    renderTopCards(lastMaisuiData, lastSpData);
+  }
+  renderPipeline(lastMaisuiData, lastSpData);
+  if(currentTab==='send') renderMailAccounts(lastMaisuiData);
+  if(currentTab==='reply') renderReplies(lastMaisuiData);
+  if(currentTab==='pool') renderSharedPool(lastSpData);
+
+  document.getElementById('refresh-time').textContent = '上次刷新: '+now();
+  document.getElementById('header-sub').textContent =
+    '外链采购全自动化系统 · 监控面板 | 累计发送 '+fmt(lastMaisuiData?.total_sent||0)+' 封 | 在线 '+(lastMaisuiData?.account_status?.length||0)+' 账号';
+
+  startCountdown();
+}
+
+function startCountdown(){
+  countdownVal = 15;
+  document.getElementById('countdown').textContent = countdownVal+'s 后刷新';
+  countdownTimer = setInterval(()=>{
+    countdownVal--;
+    document.getElementById('countdown').textContent = countdownVal+'s 后刷新';
+    if(countdownVal<=0){ clearInterval(countdownTimer); refreshAll(); }
+  },1000);
+}
+
+// ── Init ──
+addLog('sys','AutoLink OS 统一监控面板 启动');
+refreshAll();
+</script>
+</body>
+</html>
