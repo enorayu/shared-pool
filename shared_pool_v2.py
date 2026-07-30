@@ -709,6 +709,7 @@ def email_queue():
     """
     user = request.args.get("user", "")
     count = min(int(request.args.get("count", 100)), 2000)
+    offset = int(request.args.get("offset", 0))
 
     filters = {"send_status": "UNSENT"}
 
@@ -717,6 +718,7 @@ def email_queue():
         select="email_id,email,domain,send_status,collection_status,claimed_by,source,notes,created_at",
         filters=filters,
         limit=count,
+        offset=offset,
         order="email_id",
         ascending=True,
     )
@@ -726,7 +728,8 @@ def email_queue():
         e["contact_email"] = e.get("email")  # for frontend compatibility
         result.append(e)
 
-    return jsonify({"emails": result, "count": len(result)})
+    total = db.count("email_pool", filters=filters)
+    return jsonify({"emails": result, "count": len(result), "total": total, "offset": offset})
 
 
 @app.route("/api/email/export", methods=["POST"])
@@ -1164,6 +1167,7 @@ def reply_list():
     category = request.args.get("category", "")
     status = request.args.get("status", "")
     limit = min(int(request.args.get("limit", 100)), 5000)
+    offset = int(request.args.get("offset", 0))
 
     # Try reply_pool first
     filters = {}
@@ -1177,9 +1181,12 @@ def reply_list():
         select="*",
         filters=filters,
         limit=limit,
+        offset=offset,
         order="discovered_at",
         ascending=False,
     )
+
+    total = db.count("reply_pool", filters=filters)
 
     # Fallback to supplier_pool (legacy data from shared-pool-tools.exe)
     if not replies:
@@ -1189,14 +1196,16 @@ def reply_list():
             select="supplier_id,supplier_name,contact_email,source,notes,created_at",
             filters=sf,
             limit=limit,
+            offset=offset,
             order="created_at",
             ascending=False,
         )
         replies = [_supplier_to_reply(s) for s in (suppliers or [])]
         if category:
             replies = [r for r in replies if r["category"] == category.upper()]
+        total = db.count("supplier_pool", filters=sf)
 
-    return jsonify({"replies": replies or []})
+    return jsonify({"replies": replies or [], "total": total, "offset": offset})
 
 
 @app.route("/api/reply/stats", methods=["GET"])
@@ -1308,6 +1317,7 @@ def quote_list():
     status = request.args.get("status", "")
     niche = request.args.get("niche", "")
     limit = min(int(request.args.get("limit", 100)), 1000)
+    offset = int(request.args.get("offset", 0))
 
     filters = {}
     if domain:
@@ -1322,10 +1332,12 @@ def quote_list():
         select="*",
         filters=filters,
         limit=limit,
+        offset=offset,
         order="discovered_at",
         ascending=False,
     )
-    return jsonify({"quotes": quotes or []})
+    total = db.count("quote_pool", filters=filters)
+    return jsonify({"quotes": quotes or [], "total": total, "offset": offset})
 
 
 @app.route("/api/price/stats", methods=["GET"])
@@ -2216,6 +2228,18 @@ tr:last-child td{border-bottom:none}
     <div style="font-size:11px;color:var(--muted);margin-top:4px">Comma-separated usernames. Distribute assigns domains round-robin to these members.</div>
   </div>
   <table id="domain-table"><tr><th>Domain</th><th>Source</th><th>Status</th><th>Claimed By</th><th>Priority</th><th>Created</th></tr></table>
+  <!-- Domain pagination -->
+  <div class="log-filter-group" id="domain-pagination" style="justify-content:center;margin-top:8px;display:none">
+    <button class="btn" onclick="changeDomainPage(-1)">Prev</button>
+    <span id="domain-page-info" style="font-size:12px;color:var(--muted);margin:0 12px">Page 1 / 1</span>
+    <button class="btn" onclick="changeDomainPage(1)">Next</button>
+    <label style="font-size:12px;color:var(--muted);margin-left:16px">Per page:</label>
+    <select id="domain-page-size" onchange="onDomainPageSizeChange()" style="padding:4px 8px;font-size:12px;border:0.5px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text)">
+      <option value="20">20</option>
+      <option value="50" selected>50</option>
+      <option value="100">100</option>
+    </select>
+  </div>
 </div>
 
 <!-- Email Pool -->
@@ -2244,6 +2268,18 @@ tr:last-child td{border-bottom:none}
     </div>
   </div>
   <table id="email-table"><tr><th>Email</th><th>Domain</th><th>Send Status</th><th>Claimed By</th><th>Source</th><th>Created</th></tr></table>
+  <!-- Email pagination -->
+  <div class="log-filter-group" id="email-pagination" style="justify-content:center;margin-top:8px;display:none">
+    <button class="btn" onclick="changeEmailPage(-1)">Prev</button>
+    <span id="email-page-info" style="font-size:12px;color:var(--muted);margin:0 12px">Page 1 / 1</span>
+    <button class="btn" onclick="changeEmailPage(1)">Next</button>
+    <label style="font-size:12px;color:var(--muted);margin-left:16px">Per page:</label>
+    <select id="email-page-size" onchange="onEmailPageSizeChange()" style="padding:4px 8px;font-size:12px;border:0.5px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text)">
+      <option value="20">20</option>
+      <option value="50" selected>50</option>
+      <option value="100">100</option>
+    </select>
+  </div>
 </div>
 
 <!-- Reply Pool -->
@@ -2254,6 +2290,7 @@ tr:last-child td{border-bottom:none}
     <button class="btn green" onclick="loadReplyTable('A')">A class</button>
     <button class="btn amber" onclick="loadReplyTable('B')">B class</button>
     <button class="btn purple" onclick="loadReplyTable('C')">C class</button>
+    <button class="btn" style="background:var(--muted);color:#fff" onclick="loadReplyTable('D')">D class</button>
     <label style="font-size:12px;color:var(--muted)">My Name</label><input id="r-user" placeholder="your name" style="width:100px" onchange="saveUserName()">
     <button class="btn green" onclick="toggleReplyImport()">Import replies</button>
   </div>
@@ -2268,6 +2305,18 @@ tr:last-child td{border-bottom:none}
     <span id="reply-import-result" style="font-size:12px;color:var(--muted)"></span>
   </div>
   <table id="reply-table"><tr><th>Email</th><th>Domain</th><th>Category</th><th>Status</th><th>Supplier</th><th>Reply Time</th><th>Content</th></tr></table>
+  <!-- Reply pagination -->
+  <div class="log-filter-group" id="reply-pagination" style="justify-content:center;margin-top:8px;display:none">
+    <button class="btn" onclick="changeReplyPage(-1)">Prev</button>
+    <span id="reply-page-info" style="font-size:12px;color:var(--muted);margin:0 12px">Page 1 / 1</span>
+    <button class="btn" onclick="changeReplyPage(1)">Next</button>
+    <label style="font-size:12px;color:var(--muted);margin-left:16px">Per page:</label>
+    <select id="reply-page-size" onchange="onReplyPageSizeChange()" style="padding:4px 8px;font-size:12px;border:0.5px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text)">
+      <option value="20">20</option>
+      <option value="50" selected>50</option>
+      <option value="100">100</option>
+    </select>
+  </div>
 </div>
 
 <!-- Quote Pool -->
@@ -2295,6 +2344,18 @@ tr:last-child td{border-bottom:none}
     <th>Domain</th><th>Supplier</th><th>Country</th><th>Type</th><th>Price</th>
     <th>Link Rules</th><th>Permanence</th><th>TAT</th><th>Status</th>
   </tr></table>
+  </div>
+  <!-- Quote pagination -->
+  <div class="log-filter-group" id="quote-pagination" style="justify-content:center;margin-top:8px;display:none">
+    <button class="btn" onclick="changeQuotePage(-1)">Prev</button>
+    <span id="quote-page-info" style="font-size:12px;color:var(--muted);margin:0 12px">Page 1 / 1</span>
+    <button class="btn" onclick="changeQuotePage(1)">Next</button>
+    <label style="font-size:12px;color:var(--muted);margin-left:16px">Per page:</label>
+    <select id="quote-page-size" onchange="onQuotePageSizeChange()" style="padding:4px 8px;font-size:12px;border:0.5px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text)">
+      <option value="20">20</option>
+      <option value="50" selected>50</option>
+      <option value="100">100</option>
+    </select>
   </div>
 </div>
 
@@ -2353,6 +2414,12 @@ tr:last-child td{border-bottom:none}
 const API=location.origin;
 function fmt(n){return n!=null?Number(n).toLocaleString():'0'}
 function esc(s){return String(s||'').replace(/</g,'&lt;').slice(0,80)}
+
+// ── Pagination state for all pools ──
+const DOMAIN_PAGER={page:1,pageSize:50};
+const EMAIL_PAGER ={page:1,pageSize:50};
+const REPLY_PAGER ={page:1,pageSize:50,category:''};
+const QUOTE_PAGER ={page:1,pageSize:50};
 
 // ── User name via localStorage ──
 function getUserName(){
@@ -2519,7 +2586,12 @@ async function loadStats(){
 
 async function loadDomainTable(){
   const status=document.getElementById('d-status').value;
-  const r=await fetch(API+'/api/domain/list?limit=100'+(status?'&status='+status:'')).then(r=>r.json());
+  const limit=DOMAIN_PAGER.pageSize;
+  const offset=(DOMAIN_PAGER.page-1)*limit;
+  const r=await fetch(API+'/api/domain/list?limit='+limit+'&offset='+offset+(status?'&status='+status:'')).then(r=>r.json());
+  const total=r.total||0;
+  const maxPage=Math.max(1,Math.ceil(total/limit));
+  if(DOMAIN_PAGER.page>maxPage){DOMAIN_PAGER.page=maxPage;}
   document.getElementById('domain-table').innerHTML='<tr><th>Domain</th><th>Status</th><th>Claimed By</th><th>Priority</th><th>Created</th></tr>'+
     (r.domains||[]).map(d=>`<tr>
       <td>${esc(d.domain)}</td>
@@ -2528,11 +2600,27 @@ async function loadDomainTable(){
       <td>${d.priority||0}</td>
       <td>${(d.created_at||'').slice(0,16)}</td>
     </tr>`).join('');
+  document.getElementById('domain-page-info').textContent='Page '+DOMAIN_PAGER.page+' / '+maxPage+' ('+total+' records)';
+  document.getElementById('domain-pagination').style.display=total>limit?'flex':'none';
+}
+function changeDomainPage(delta){
+  DOMAIN_PAGER.page=Math.max(1,DOMAIN_PAGER.page+delta);
+  loadDomainTable();
+}
+function onDomainPageSizeChange(){
+  DOMAIN_PAGER.pageSize=parseInt(document.getElementById('domain-page-size').value)||50;
+  DOMAIN_PAGER.page=1;
+  loadDomainTable();
 }
 
 async function loadEmailTable(){
   const u=getUserName()||'';
-  const r=await fetch(API+'/api/email/queue?user='+encodeURIComponent(u)+'&count=50').then(r=>r.json());
+  const limit=EMAIL_PAGER.pageSize;
+  const offset=(EMAIL_PAGER.page-1)*limit;
+  const r=await fetch(API+'/api/email/queue?user='+encodeURIComponent(u)+'&count='+limit+'&offset='+offset).then(r=>r.json());
+  const total=r.total||0;
+  const maxPage=Math.max(1,Math.ceil(total/limit));
+  if(EMAIL_PAGER.page>maxPage){EMAIL_PAGER.page=maxPage;}
   document.getElementById('email-table').innerHTML='<tr><th>Email</th><th>Domain</th><th>Send Status</th><th>Claimed By</th><th>Created</th></tr>'+
     (r.emails||[]).map(e=>`<tr>
       <td>${esc(e.contact_email)}</td>
@@ -2541,6 +2629,81 @@ async function loadEmailTable(){
       <td>${esc(e.claimed_by)}</td>
       <td>${(e.created_at||'').slice(0,16)}</td>
     </tr>`).join('');
+  document.getElementById('email-page-info').textContent='Page '+EMAIL_PAGER.page+' / '+maxPage+' ('+total+' records)';
+  document.getElementById('email-pagination').style.display=total>limit?'flex':'none';
+}
+function changeEmailPage(delta){
+  EMAIL_PAGER.page=Math.max(1,EMAIL_PAGER.page+delta);
+  loadEmailTable();
+}
+function onEmailPageSizeChange(){
+  EMAIL_PAGER.pageSize=parseInt(document.getElementById('email-page-size').value)||50;
+  EMAIL_PAGER.page=1;
+  loadEmailTable();
+}
+
+async function loadReplyTable(cat){
+  if(cat!==undefined){REPLY_PAGER.category=cat;REPLY_PAGER.page=1;}
+  const limit=REPLY_PAGER.pageSize;
+  const offset=(REPLY_PAGER.page-1)*limit;
+  const category=REPLY_PAGER.category;
+  const r=await fetch(API+'/api/reply/list?limit='+limit+'&offset='+offset+(category?'&category='+category:'')).then(r=>r.json());
+  const total=r.total||0;
+  const maxPage=Math.max(1,Math.ceil(total/limit));
+  if(REPLY_PAGER.page>maxPage){REPLY_PAGER.page=maxPage;}
+  document.getElementById('reply-table').innerHTML='<tr><th>Email</th><th>Domain</th><th>Category</th><th>Status</th><th>Supplier</th><th>Reply Time</th><th>Content</th></tr>'+
+    (r.replies||[]).map(rp=>`<tr>
+      <td>${esc(rp.email)}</td>
+      <td>${esc(rp.domain)}</td>
+      <td><span class="cat-${rp.category}">${rp.category||'C'}</span></td>
+      <td>${esc(rp.status)}</td>
+      <td>${esc(rp.supplier)}</td>
+      <td>${(rp.reply_time||'').slice(0,16)}</td>
+      <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(rp.reply_content)}</td>
+    </tr>`).join('');
+  document.getElementById('reply-page-info').textContent='Page '+REPLY_PAGER.page+' / '+maxPage+' ('+total+' records)';
+  document.getElementById('reply-pagination').style.display=total>limit?'flex':'none';
+}
+function changeReplyPage(delta){
+  REPLY_PAGER.page=Math.max(1,REPLY_PAGER.page+delta);
+  loadReplyTable();
+}
+function onReplyPageSizeChange(){
+  REPLY_PAGER.pageSize=parseInt(document.getElementById('reply-page-size').value)||50;
+  REPLY_PAGER.page=1;
+  loadReplyTable();
+}
+
+async function loadQuoteTable(){
+  const limit=QUOTE_PAGER.pageSize;
+  const offset=(QUOTE_PAGER.page-1)*limit;
+  const r=await fetch(API+'/api/quote/list?limit='+limit+'&offset='+offset).then(r=>r.json());
+  const total=r.total||0;
+  const maxPage=Math.max(1,Math.ceil(total/limit));
+  if(QUOTE_PAGER.page>maxPage){QUOTE_PAGER.page=maxPage;}
+  document.getElementById('quote-table').innerHTML='<tr><th>Domain</th><th>Supplier</th><th>Country</th><th>Type</th><th>Price</th><th>Link Rules</th><th>Permanence</th><th>TAT</th><th>Status</th></tr>'+
+    (r.quotes||[]).map(q=>`<tr>
+      <td><a href="http://${esc(q.domain)}" target="_blank">${esc(q.domain)}</a></td>
+      <td>${esc(q.supplier)}</td>
+      <td>${esc(q.country)}</td>
+      <td>${esc(q.cooperation_type)}</td>
+      <td>${esc(q.price)}</td>
+      <td>${esc(q.link_rules)}</td>
+      <td>${esc(q.permanence)}</td>
+      <td>${esc(q.tat)}</td>
+      <td><span class="status-${q.status||'New'}">${q.status||'New'}</span></td>
+    </tr>`).join('');
+  document.getElementById('quote-page-info').textContent='Page '+QUOTE_PAGER.page+' / '+maxPage+' ('+total+' records)';
+  document.getElementById('quote-pagination').style.display=total>limit?'flex':'none';
+}
+function changeQuotePage(delta){
+  QUOTE_PAGER.page=Math.max(1,QUOTE_PAGER.page+delta);
+  loadQuoteTable();
+}
+function onQuotePageSizeChange(){
+  QUOTE_PAGER.pageSize=parseInt(document.getElementById('quote-page-size').value)||50;
+  QUOTE_PAGER.page=1;
+  loadQuoteTable();
 }
 
 function toggleEmailImport(){
@@ -2792,36 +2955,6 @@ async function loadLogTable(filterType) {
     setLogPoolFilter(pool);
     if (action) setLogActionFilter(action);
   }
-}
-
-async function loadReplyTable(cat){
-  const r=await fetch(API+'/api/reply/list?limit=100'+(cat?'&category='+cat:'')).then(r=>r.json());
-  document.getElementById('reply-table').innerHTML='<tr><th>Email</th><th>Domain</th><th>Category</th><th>Status</th><th>Supplier</th><th>Reply Time</th><th>Content</th></tr>'+
-    (r.replies||[]).map(rp=>`<tr>
-      <td>${esc(rp.email)}</td>
-      <td>${esc(rp.domain)}</td>
-      <td><span class="cat-${rp.category}">${rp.category||'C'}</span></td>
-      <td>${esc(rp.status)}</td>
-      <td>${esc(rp.supplier)}</td>
-      <td>${(rp.reply_time||'').slice(0,16)}</td>
-      <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(rp.reply_content)}</td>
-    </tr>`).join('');
-}
-
-async function loadQuoteTable(){
-  const r=await fetch(API+'/api/quote/list?limit=200').then(r=>r.json());
-  document.getElementById('quote-table').innerHTML='<tr><th>Domain</th><th>Supplier</th><th>Country</th><th>Type</th><th>Price</th><th>Link Rules</th><th>Permanence</th><th>TAT</th><th>Status</th></tr>'+
-    (r.quotes||[]).map(q=>`<tr>
-      <td><a href="http://${esc(q.domain)}" target="_blank">${esc(q.domain)}</a></td>
-      <td>${esc(q.supplier)}</td>
-      <td>${esc(q.country)}</td>
-      <td>${esc(q.cooperation_type)}</td>
-      <td>${esc(q.price)}</td>
-      <td>${esc(q.link_rules)}</td>
-      <td>${esc(q.permanence)}</td>
-      <td>${esc(q.tat)}</td>
-      <td><span class="status-${q.status||'New'}">${q.status||'New'}</span></td>
-    </tr>`).join('');
 }
 
 // ── Import A-class replies to Quote Pool ──
