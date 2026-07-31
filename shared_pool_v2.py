@@ -1870,7 +1870,7 @@ def get_stats():
 
         reply_total = reply_a = reply_b = reply_c = reply_unread = 0
         reply_today_a = reply_today_b = reply_today_c = 0
-        today_str = datetime.now().strftime('%Y-%m-%d')
+        yesterday_str = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
         try:
             reply_total = db.count("reply_pool")
             if reply_total > 0:
@@ -1878,24 +1878,11 @@ def get_stats():
                 reply_b = db.count("reply_pool", filters={"category": "B"})
                 reply_c = db.count("reply_pool", filters={"category": "C"})
                 reply_unread = db.count("reply_pool", filters={"status": "New"})
-                # Today's new replies (by created_at or discovered_at)
+                # Today's new replies (discovered_at > yesterday midnight UTC)
                 try:
-                    today_replies = db.select(
-                        "reply_pool",
-                        select="category,created_at,discovered_at",
-                        limit=10000,
-                    )
-                    if today_replies:
-                        for r in today_replies:
-                            dt = (r.get("created_at") or r.get("discovered_at") or "")
-                            if dt.startswith(today_str):
-                                cat = (r.get("category") or "C").upper()
-                                if cat == "A":
-                                    reply_today_a += 1
-                                elif cat == "B":
-                                    reply_today_b += 1
-                                else:
-                                    reply_today_c += 1
+                    reply_today_a = db.count("reply_pool", filters={"category": "A", "discovered_at": f"gt.{yesterday_str}"})
+                    reply_today_b = db.count("reply_pool", filters={"category": "B", "discovered_at": f"gt.{yesterday_str}"})
+                    reply_today_c = db.count("reply_pool", filters={"category": "C", "discovered_at": f"gt.{yesterday_str}"})
                 except Exception:
                     pass
             else:
@@ -1946,9 +1933,9 @@ def get_stats():
             "reply_b": reply_b,
             "reply_c": reply_c,
             "reply_today": 0,
-            "reply_a_today": reply_today_a,
-            "reply_b_today": reply_today_b,
-            "reply_c_today": reply_today_c,
+            "reply_today_a": reply_today_a,
+            "reply_today_b": reply_today_b,
+            "reply_today_c": reply_today_c,
             "quote_total": quote_total,
             "quote_today_new": 0,
             "quote_suppliers": 0,
