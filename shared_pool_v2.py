@@ -571,12 +571,12 @@ def domain_export():
         print(f"[domain_export] PATCH failed HTTP {resp.status}: {err_detail}", file=sys.stderr)
         return jsonify({"error": f"Failed to lock domains (HTTP {resp.status})", "exported": 0}), 500
 
-    # 3. Generate CSV — domain fields only (no contact_email)
+    # 3. Generate CSV — sequential #, not domain_id
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["domain_id", "domain", "source", "priority", "created_at"])
-    for r in unique_domains:
-        writer.writerow([r["domain_id"], r["domain"], safe_str(r.get("source")),
+    writer.writerow(["#", "domain", "source", "priority", "created_at"])
+    for idx, r in enumerate(unique_domains, 1):
+        writer.writerow([idx, r["domain"], safe_str(r.get("source")),
                          r.get("priority", 0),
                          safe_str(r.get("created_at"))[:19]])
 
@@ -779,13 +779,13 @@ def email_export():
     filename = f"{batch_id}.csv"
     now = now_iso()
 
-    # Generate CSV
+    # Generate CSV — sequential #, not email_id
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["email_id", "email", "domain", "send_status", "source"])
-    for e in emails:
+    writer.writerow(["#", "email", "domain", "send_status", "source"])
+    for idx, e in enumerate(emails, 1):
         writer.writerow([
-            e["email_id"],
+            idx,
             safe_str(e.get("email")),
             e["domain"],
             e.get("send_status", "UNSENT"),
@@ -1382,25 +1382,62 @@ def quote_stats():
 @app.route("/api/price/export", methods=["GET"])
 @app.route("/api/quote/export", methods=["GET"])
 def quote_export():
-    """Export quotes as CSV."""
+    """Export quotes as CSV — Jenny template format (without 6 Niche Price columns)."""
     quotes = db.select("quote_pool", select="*", limit=10000,
                        order="discovered_at", ascending=False)
+    # Jenny CSV columns (excluding Casino/Finance/Erotic/Dating/CBD/Crypto/Medicine Niche Price)
+    # + 8 standard fields as separate columns (cooperation_type/payment/discount/link_rules/
+    #   content/requirements/additional_services/supplier)
+    headers = ["#", "Link", "Price (USD)", "Backlink Type", "DR", "DA",
+               "Ref. Domains", "Traffic", "Country", "Keywords",
+               "Categories", "Languages", "TAT", "Permanence", "Contact",
+               "Cooperation", "Payment", "Discount", "Link Rules", "Content",
+               "Requirements", "Extra Services", "Supplier", "其他"]
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["domain", "email", "supplier", "contact_email", "niche", "country",
-                     "traffic", "cooperation_type", "price", "link_rules", "permanence",
-                     "content", "tat", "payment", "discount", "additional_services",
-                     "requirements", "status", "notes", "discovered_at"])
-    for q in (quotes or []):
+    writer.writerow(headers)
+
+    # Fields already represented as explicit columns → exclude from "其他"
+    mapped_keys = {'domain','price','cooperation_type','traffic','country',
+                   'site_category','niche','tat','permanence','contact_email',
+                   'email','supplier','da','dr','ref_domains','keywords',
+                   'categories','languages','link_rules','content','payment',
+                   'discount','additional_services','requirements',
+                   'reply_content','status','notes','discovered_by',
+                   'discovered_at','quote_id','reply_id','id','priority'}
+
+    for idx, q in enumerate(quotes or [], 1):
+        # Build "其他" column from truly unmapped fields only
+        other_parts = []
+        for k, v in q.items():
+            if k.lower() not in mapped_keys and v is not None and str(v).strip():
+                other_parts.append(f"{k}: {v}")
+
         writer.writerow([
-            q.get("domain", ""), q.get("email", ""), q.get("supplier", ""),
-            q.get("contact_email", ""), q.get("niche", ""), q.get("country", ""),
-            q.get("traffic", ""), q.get("cooperation_type", ""), q.get("price", ""),
-            q.get("link_rules", ""), q.get("permanence", ""), q.get("content", ""),
-            q.get("tat", ""), q.get("payment", ""), q.get("discount", ""),
-            q.get("additional_services", ""), q.get("requirements", ""),
-            q.get("status", ""), q.get("notes", ""),
-            safe_str(q.get("discovered_at", ""))[:19],
+            idx,
+            q.get("domain", ""),
+            safe_str(q.get("price")),
+            safe_str(q.get("site_category") or q.get("niche")),
+            safe_str(q.get("dr") or q.get("traffic")),
+            safe_str(q.get("da")),
+            safe_str(q.get("ref_domains")),
+            safe_str(q.get("traffic")),
+            safe_str(q.get("country")),
+            safe_str(q.get("niche") or q.get("site_category")),
+            safe_str(q.get("site_category") or q.get("niche")),
+            safe_str(q.get("languages")),
+            safe_str(q.get("tat")),
+            safe_str(q.get("permanence")),
+            safe_str(q.get("contact_email") or q.get("email")),
+            safe_str(q.get("cooperation_type")),
+            safe_str(q.get("payment")),
+            safe_str(q.get("discount")),
+            safe_str(q.get("link_rules")),
+            safe_str(q.get("content")),
+            safe_str(q.get("requirements")),
+            safe_str(q.get("additional_services")),
+            safe_str(q.get("supplier")),
+            " | ".join(other_parts),
         ])
 
     return Response(
@@ -2162,11 +2199,22 @@ h1{font-size:18px;font-weight:500;margin-bottom:2px}
 .card .label{font-size:11px;color:var(--muted);margin-bottom:3px}
 .card .value{font-size:22px;font-weight:500}
 .card .value.blue{color:var(--blue)}.card .value.green{color:var(--green)}.card .value.amber{color:var(--amber)}.card .value.coral{color:var(--coral)}.card .value.purple{color:var(--purple)}.card .value.teal{color:var(--teal)}
-table{width:100%;border-collapse:collapse;background:var(--card);border:0.5px solid var(--border);border-radius:10px;overflow:hidden}
-th,td{text-align:left;padding:8px 12px;font-size:12px}
-th{font-weight:500;background:#f8f9fa;border-bottom:0.5px solid var(--border);color:var(--muted)}
-td{border-bottom:0.5px solid var(--border)}
+/* ── Checkbox & selection styles ── */
+.chk-all{width:16px;height:16px;cursor:pointer;accent-color:var(--blue)}
+.chk-row{width:15px;height:15px;cursor:pointer;accent-color:var(--blue);margin-top:2px}
+.btn-bar{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center}
+.export-sel-btn{display:inline-block;padding:6px 14px;font-size:12px;font-weight:500;border-radius:6px;border:none;cursor:pointer;color:#fff;background:var(--teal);transition:opacity .2s}
+.export-sel-btn:hover{opacity:.85}
+.export-sel-btn:disabled{opacity:.4;cursor:not-allowed}
+.sel-count{font-size:12px;color:var(--muted);padding:0 8px}
+/* ── Enhanced table styles ── */
+table{width:100%;border-collapse:collapse;background:var(--card);border:0.5px solid var(--border);border-radius:10px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.04)}
+th,td{text-align:left;padding:9px 14px;font-size:12.5px}
+th{font-weight:600;background:linear-gradient(180deg,#f8f9fa 0%,#f1f3f5 100%);border-bottom:1.5px solid #d0d7de;color:var(--text);position:sticky;top:0;z-index:1;text-transform:none;letter-spacing:.3px}
+td{border-bottom:0.5px solid #eef1f4;transition:background .15s}
+tr:hover td{background:#f7fafc}
 tr:last-child td{border-bottom:none}
+tr.selected-row td{background:#e8f4fd}
 .btn{display:inline-block;padding:6px 14px;font-size:12px;font-weight:500;border-radius:6px;border:none;cursor:pointer;color:#fff;background:var(--blue);transition:opacity .2s;margin-right:4px}
 .btn:hover{opacity:.85}
 .btn.green{background:var(--green)}.btn.amber{background:var(--amber)}.btn.coral{background:var(--coral)}.btn.purple{background:var(--purple)}.btn.teal{background:var(--teal)}
@@ -2206,6 +2254,7 @@ tr:last-child td{border-bottom:none}
   <div class="cards" id="domain-cards"></div>
   <div class="actions">
     <button class="btn" onclick="exportDomains()">Export NEW domains</button>
+    <button class="export-sel-btn" id="domain-export-sel-btn" onclick="exportSelectedDomains()" disabled>Export Selected (<span id="domain-sel-count">0</span>)</button>
     <button class="btn green" onclick="distributeDomains()">Distribute to team</button>
     <button class="btn amber" onclick="toggleImport()">Import domains</button>
   </div>
@@ -2241,7 +2290,7 @@ tr:last-child td{border-bottom:none}
     </div>
     <div style="font-size:11px;color:var(--muted);margin-top:4px">Comma-separated usernames. Distribute assigns domains round-robin to these members.</div>
   </div>
-  <table id="domain-table"><tr><th>Domain</th><th>Source</th><th>Status</th><th>Claimed By</th><th>Priority</th><th>Created</th></tr></table>
+  <table id="domain-table"><tr><th><input type="checkbox" class="chk-all" onchange="toggleDomainAll(this)" title="Select All"></th><th>#</th><th>Domain</th><th>Source</th><th>Status</th><th>Claimed By</th><th>Priority</th><th>Created</th></tr></table>
   <!-- Domain pagination -->
   <div class="log-filter-group" id="domain-pagination" style="justify-content:center;margin-top:8px;display:none">
     <button class="btn" onclick="changeDomainPage(-1)">Prev</button>
@@ -2261,6 +2310,7 @@ tr:last-child td{border-bottom:none}
   <div class="cards" id="email-cards"></div>
   <div class="actions">
     <button class="btn" onclick="exportEmails()">Export send queue</button>
+    <button class="export-sel-btn" id="email-export-sel-btn" onclick="exportSelectedEmails()" disabled>Export Selected (<span id="email-sel-count">0</span>)</button>
     <label style="font-size:12px;color:var(--muted)">My Name</label><input id="e-user" placeholder="your name" style="width:100px" onchange="saveUserName()">
     <label style="font-size:12px;color:var(--muted)">Count</label><input id="e-count" value="1000" type="number" style="width:80px">
     <button class="btn green" onclick="toggleEmailImport()">Import emails</button>
@@ -2281,7 +2331,7 @@ tr:last-child td{border-bottom:none}
       <span id="email-import-result" style="font-size:12px;color:var(--muted)"></span>
     </div>
   </div>
-  <table id="email-table"><tr><th>Email</th><th>Domain</th><th>Send Status</th><th>Claimed By</th><th>Source</th><th>Created</th></tr></table>
+  <table id="email-table"><tr><th><input type="checkbox" class="chk-all" onchange="toggleEmailAll(this)" title="Select All"></th><th>#</th><th>Email</th><th>Domain</th><th>Send Status</th><th>Claimed By</th><th>Source</th><th>Created</th></tr></table>
   <!-- Email pagination -->
   <div class="log-filter-group" id="email-pagination" style="justify-content:center;margin-top:8px;display:none">
     <button class="btn" onclick="changeEmailPage(-1)">Prev</button>
@@ -2318,7 +2368,7 @@ tr:last-child td{border-bottom:none}
     <button class="btn" style="font-size:11px" onclick="downloadReplyTemplate()">Download Template</button>
     <span id="reply-import-result" style="font-size:12px;color:var(--muted)"></span>
   </div>
-  <table id="reply-table"><tr><th>Email</th><th>Domain</th><th>Category</th><th>Status</th><th>Supplier</th><th>Reply Time</th><th>Content</th></tr></table>
+  <table id="reply-table"><tr><th><input type="checkbox" class="chk-all" onchange="toggleReplyAll(this)" title="Select All"></th><th>#</th><th>Email</th><th>Domain</th><th>Category</th><th>Status</th><th>Supplier</th><th>Reply Time</th><th>Content</th></tr></table>
   <!-- Reply pagination -->
   <div class="log-filter-group" id="reply-pagination" style="justify-content:center;margin-top:8px;display:none">
     <button class="btn" onclick="changeReplyPage(-1)">Prev</button>
@@ -2337,7 +2387,8 @@ tr:last-child td{border-bottom:none}
 <div class="page" id="page-quote">
   <div class="cards" id="quote-cards"></div>
   <div class="actions">
-    <a class="btn" href="/api/quote/export" target="_blank">Export CSV</a>
+    <button class="export-sel-btn" id="quote-export-sel-btn" onclick="exportSelectedQuotes()" disabled>Export Selected (<span id="quote-sel-count">0</span>)</button>
+    <a class="btn" href="/api/quote/export" target="_blank">Export All CSV</a>
     <label style="font-size:12px;color:var(--muted)">My Name</label><input id="q-user" placeholder="your name" style="width:100px" onchange="saveUserName()">
     <button class="btn green" onclick="importARepliesToQuotes()">Import A-class replies</button>
     <button class="btn" onclick="toggleQuoteImport()">Import from File</button>
@@ -2355,8 +2406,10 @@ tr:last-child td{border-bottom:none}
   </div>
   <div style="overflow-x:auto">
   <table id="quote-table"><tr>
-    <th>Domain</th><th>Supplier</th><th>Site Type</th><th>Country</th><th>DA</th>
-    <th>Type</th><th>Price</th><th>TAT</th><th>Content/Link</th><th>Contact</th>
+    <th><input type="checkbox" class="chk-all" onchange="toggleQuoteAll(this)" title="Select All"></th><th>#</th>
+    <th>Link</th><th>Price (USD)</th><th>Backlink Type</th><th>DR</th><th>DA</th>
+    <th>Ref. Domains</th><th>Traffic</th><th>Country</th><th>Keywords</th>
+    <th>Categories</th><th>Languages</th><th>TAT</th><th>Permanence</th><th>Contact</th><th>其他</th>
   </tr></table>
   </div>
   <!-- Quote pagination -->
@@ -2598,6 +2651,20 @@ async function loadStats(){
   }catch(e){document.getElementById('refresh-msg').textContent='Error: '+e.message}
 }
 
+// ── Selection state for all pools ──
+const DOMAIN_SEL = new Set();
+const EMAIL_SEL = new Set();
+const REPLY_SEL = new Set();
+const QUOTE_SEL = new Set();
+
+// ── Selection helpers ──
+function _updateSelCount(pool, countId, btnId){
+  const c=window[pool].size;
+  document.getElementById(countId).textContent=c;
+  document.getElementById(btnId).disabled=c===0;
+}
+function _getGlobalIdx(page, pageSize, rowIdx){ return (page-1)*pageSize + rowIdx + 1; }
+
 async function loadDomainTable(){
   const status=document.getElementById('d-status').value;
   const limit=DOMAIN_PAGER.pageSize;
@@ -2606,16 +2673,28 @@ async function loadDomainTable(){
   const total=r.unique_total||0;
   const maxPage=Math.max(1,Math.ceil(total/limit));
   if(DOMAIN_PAGER.page>maxPage){DOMAIN_PAGER.page=maxPage;}
-  document.getElementById('domain-table').innerHTML='<tr><th>Domain</th><th>Status</th><th>Claimed By</th><th>Priority</th><th>Created</th></tr>'+
-    (r.domains||[]).map(d=>`<tr>
+  DOMAIN_SEL.clear();
+  document.getElementById('domain-table').innerHTML='<tr><th><input type="checkbox" class="chk-all" onchange="toggleDomainAll(this)" title="Select All"></th><th>#</th><th>Domain</th><th>Status</th><th>Claimed By</th><th>Priority</th><th>Created</th></tr>'+
+    (r.domains||[]).map((d,i)=>`<tr data-idx="${i}" data-id="${d.domain_id}">
+      <td><input type="checkbox" class="chk-row" onchange="onDomainCheck(this,${d.domain_id},${i})"></td>
+      <td style="color:var(--muted);font-size:11.5px;text-align:center">${_getGlobalIdx(DOMAIN_PAGER.page,limit,i)}</td>
       <td>${esc(d.domain)}</td>
       <td><span class="status-${d.collection_status||'New'}">${d.collection_status||'New'}</span></td>
       <td>${esc(d.claimed_by)}</td>
       <td>${d.priority||0}</td>
       <td>${(d.created_at||'').slice(0,16)}</td>
     </tr>`).join('');
+  _updateSelCount('DOMAIN_SEL','domain-sel-count','domain-export-sel-btn');
   document.getElementById('domain-page-info').textContent='Page '+DOMAIN_PAGER.page+' / '+maxPage+' ('+total+' records)';
   document.getElementById('domain-pagination').style.display=total>limit?'flex':'none';
+}
+function toggleDomainAll(chk){
+  document.querySelectorAll('#domain-table .chk-row').forEach(c=>{c.checked=chk.checked;c.onchange();});
+}
+function onDomainCheck(chk,id,idx){
+  if(chk.checked) DOMAIN_SEL.add({id,idx,row:chk.closest('tr')}); else DOMAIN_SEL.forEach((v,i)=>{if(v.id===id)DOMAIN_SEL.delete(v);});
+  _updateSelCount('DOMAIN_SEL','domain-sel-count','domain-export-sel-btn');
+  chk.closest('tr').classList.toggle('selected-row',chk.checked);
 }
 function changeDomainPage(delta){
   DOMAIN_PAGER.page=Math.max(1,DOMAIN_PAGER.page+delta);
@@ -2635,16 +2714,28 @@ async function loadEmailTable(){
   const total=r.total||0;
   const maxPage=Math.max(1,Math.ceil(total/limit));
   if(EMAIL_PAGER.page>maxPage){EMAIL_PAGER.page=maxPage;}
-  document.getElementById('email-table').innerHTML='<tr><th>Email</th><th>Domain</th><th>Send Status</th><th>Claimed By</th><th>Created</th></tr>'+
-    (r.emails||[]).map(e=>`<tr>
+  EMAIL_SEL.clear();
+  document.getElementById('email-table').innerHTML='<tr><th><input type="checkbox" class="chk-all" onchange="toggleEmailAll(this)" title="Select All"></th><th>#</th><th>Email</th><th>Domain</th><th>Send Status</th><th>Claimed By</th><th>Created</th></tr>'+
+    (r.emails||[]).map((e,i)=>`<tr data-idx="${i}" data-id="${e.email_id}">
+      <td><input type="checkbox" class="chk-row" onchange="onEmailCheck(this,${e.email_id},${i})"></td>
+      <td style="color:var(--muted);font-size:11.5px;text-align:center">${_getGlobalIdx(EMAIL_PAGER.page,limit,i)}</td>
       <td>${esc(e.contact_email)}</td>
       <td>${esc(e.domain)}</td>
       <td><span class="status-${e.send_status||'UNSENT'}">${e.send_status||'UNSENT'}</span></td>
       <td>${esc(e.claimed_by)}</td>
       <td>${(e.created_at||'').slice(0,16)}</td>
     </tr>`).join('');
+  _updateSelCount('EMAIL_SEL','email-sel-count','email-export-sel-btn');
   document.getElementById('email-page-info').textContent='Page '+EMAIL_PAGER.page+' / '+maxPage+' ('+total+' records)';
   document.getElementById('email-pagination').style.display=total>limit?'flex':'none';
+}
+function toggleEmailAll(chk){
+  document.querySelectorAll('#email-table .chk-row').forEach(c=>{c.checked=chk.checked;c.onchange();});
+}
+function onEmailCheck(chk,id,idx){
+  if(chk.checked) EMAIL_SEL.add({id,idx,row:chk.closest('tr')}); else EMAIL_SEL.forEach((v,i)=>{if(v.id===id)EMAIL_SEL.delete(v);});
+  _updateSelCount('EMAIL_SEL','email-sel-count','email-export-sel-btn');
+  chk.closest('tr').classList.toggle('selected-row',chk.checked);
 }
 function changeEmailPage(delta){
   EMAIL_PAGER.page=Math.max(1,EMAIL_PAGER.page+delta);
@@ -2665,8 +2756,11 @@ async function loadReplyTable(cat){
   const total=r.total||0;
   const maxPage=Math.max(1,Math.ceil(total/limit));
   if(REPLY_PAGER.page>maxPage){REPLY_PAGER.page=maxPage;}
-  document.getElementById('reply-table').innerHTML='<tr><th>Email</th><th>Domain</th><th>Category</th><th>Status</th><th>Supplier</th><th>Reply Time</th><th>Content</th></tr>'+
-    (r.replies||[]).map(rp=>`<tr>
+  REPLY_SEL.clear();
+  document.getElementById('reply-table').innerHTML='<tr><th><input type="checkbox" class="chk-all" onchange="toggleReplyAll(this)" title="Select All"></th><th>#</th><th>Email</th><th>Domain</th><th>Category</th><th>Status</th><th>Supplier</th><th>Reply Time</th><th>Content</th></tr>'+
+    (r.replies||[]).map((rp,i)=>`<tr data-idx="${i}" data-id="${rp.reply_id}">
+      <td><input type="checkbox" class="chk-row" onchange="onReplyCheck(this,${rp.reply_id},${i})"></td>
+      <td style="color:var(--muted);font-size:11.5px;text-align:center">${_getGlobalIdx(REPLY_PAGER.page,limit,i)}</td>
       <td>${esc(rp.email)}</td>
       <td>${esc(rp.domain)}</td>
       <td><span class="cat-${rp.category}">${rp.category||'C'}</span></td>
@@ -2677,6 +2771,13 @@ async function loadReplyTable(cat){
     </tr>`).join('');
   document.getElementById('reply-page-info').textContent='Page '+REPLY_PAGER.page+' / '+maxPage+' ('+total+' records)';
   document.getElementById('reply-pagination').style.display=total>limit?'flex':'none';
+}
+function toggleReplyAll(chk){
+  document.querySelectorAll('#reply-table .chk-row').forEach(c=>{c.checked=chk.checked;c.onchange();});
+}
+function onReplyCheck(chk,id,idx){
+  if(chk.checked) REPLY_SEL.add({id,idx,row:chk.closest('tr')}); else REPLY_SEL.forEach((v,i)=>{if(v.id===id)REPLY_SEL.delete(v);});
+  chk.closest('tr').classList.toggle('selected-row',chk.checked);
 }
 function changeReplyPage(delta){
   REPLY_PAGER.page=Math.max(1,REPLY_PAGER.page+delta);
@@ -2695,21 +2796,60 @@ async function loadQuoteTable(){
   const total=r.total||0;
   const maxPage=Math.max(1,Math.ceil(total/limit));
   if(QUOTE_PAGER.page>maxPage){QUOTE_PAGER.page=maxPage;}
-  document.getElementById('quote-table').innerHTML='<tr><th>Domain</th><th>Supplier</th><th>Site Type</th><th>Country</th><th>DA</th><th>Type</th><th>Price</th><th>TAT</th><th>Content/Link</th><th>Contact</th></tr>'+
-    (r.quotes||[]).map(q=>`<tr>
-      <td><a href="http://${esc(q.domain)}" target="_blank">${esc(q.domain)}</a></td>
-      <td title="${esc(q.supplier,200)}">${esc(q.supplier,30)}</td>
-      <td>${esc(q.site_category||q.niche||'',20)}</td>
-      <td>${esc(q.country,20)}</td>
-      <td>${esc(q.traffic,10)}</td>
-      <td>${esc(q.cooperation_type,20)}</td>
-      <td style="white-space:pre-wrap;max-width:180px;font-size:11px">${esc(q.price,200)}</td>
-      <td>${esc(q.tat,30)}</td>
-      <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc((q.requirements||'')+(q.content||''),500)}">${esc((q.requirements||'')+(q.content||''),60)}</td>
-      <td>${esc(q.contact_email||q.email,30)}</td>
-    </tr>`).join('');
+  QUOTE_SEL.clear();
+  // Map quote_pool fields → Jenny CSV template columns (without 6 Niche Price cols)
+  document.getElementById('quote-table').innerHTML='<tr><th><input type="checkbox" class="chk-all" onchange="toggleQuoteAll(this)" title="Select All"></th><th>#</th>'+
+    '<th>Link</th><th>Price (USD)</th><th>Backlink Type</th><th>DR</th><th>DA</th>'+
+    '<th>Ref. Domains</th><th>Traffic</th><th>Country</th><th>Keywords</th>'+
+    '<th>Categories</th><th>Languages</th><th>TAT</th><th>Permanence</th><th>Contact</th>'+
+    '<th>Cooperation</th><th>Payment</th><th>Discount</th><th>Link Rules</th><th>Content</th><th>Requirements</th><th>Extra Services</th><th>Supplier</th><th>其他</th></tr>'+
+    (r.quotes||[]).map((q,i)=>{
+      // Build "其他" column: only truly unmapped fields (excludes all standard columns below)
+      const mappedFields=new Set(['domain','price','cooperation_type','traffic','country','site_category','niche','tat','permanence','contact_email','email','supplier','da','dr','ref_domains','keywords','categories','languages','link_rules','content','payment','discount','additional_services','requirements','reply_content','status','notes','discovered_by','discovered_at','quote_id','reply_id','priority','id']);
+      const otherParts=[];
+      for(const [k,v] of Object.entries(q)){
+        if(!mappedFields.has(k.toLowerCase()) && v!=null && String(v).trim()) otherParts.push(k+': '+v);
+      }
+      const otherStr=otherParts.join(' | ');
+      return `<tr data-idx="${i}" data-id="${q.quote_id||q.id}">
+        <td><input type="checkbox" class="chk-row" onchange="onQuoteCheck(this,${q.quote_id||q.id},${i})"></td>
+        <td style="color:var(--muted);font-size:11.5px;text-align:center">${_getGlobalIdx(QUOTE_PAGER.page,limit,i)}</td>
+        <td><a href="http://${esc(q.domain)}" target="_blank">${esc(q.domain)}</a></td>
+        <td style="white-space:nowrap">${esc(q.price,'')}</td>
+        <td>${esc(q.site_category||q.niche||'','')}</td>
+        <td>${esc(q.dr||q.traffic||'','')}</td>
+        <td>${esc(q.da||'','')}</td>
+        <td>${esc(q.ref_domains||'','')}</td>
+        <td>${esc(q.traffic||'','')}</td>
+        <td>${esc(q.country||'','')}</td>
+        <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis" title="${esc(q.niche||q.site_category||'',200)}">${esc(q.niche||q.site_category||'','')}</td>
+        <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis">${esc(q.site_category||q.niche||'','')}</td>
+        <td>${esc(q.languages||'','')}</td>
+        <td>${esc(q.tat||'','')}</td>
+        <td>${esc(q.permanence||'','')}</td>
+        <td>${esc(q.contact_email||q.email||'','')}</td>
+        <td>${esc(q.cooperation_type||'','')}</td>
+        <td>${esc(q.payment||'','')}</td>
+        <td>${esc(q.discount||'','')}</td>
+        <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis" title="${esc(q.link_rules||'',300)}">${esc(q.link_rules||'','')}</td>
+        <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis" title="${esc(q.content||'',300)}">${esc(q.content||'','')}</td>
+        <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis" title="${esc(q.requirements||'',300)}">${esc(q.requirements||'','')}</td>
+        <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis" title="${esc(q.additional_services||'',300)}">${esc(q.additional_services||'','')}</td>
+        <td>${esc(q.supplier||'','')}</td>
+        <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;font-size:11px;color:var(--muted)" title="${esc(otherStr,500)}">${esc(otherStr,80)}</td>
+      </tr>`;
+    }).join('');
+  _updateSelCount('QUOTE_SEL','quote-sel-count','quote-export-sel-btn');
   document.getElementById('quote-page-info').textContent='Page '+QUOTE_PAGER.page+' / '+maxPage+' ('+total+' records)';
   document.getElementById('quote-pagination').style.display=total>limit?'flex':'none';
+}
+function toggleQuoteAll(chk){
+  document.querySelectorAll('#quote-table .chk-row').forEach(c=>{c.checked=chk.checked;c.onchange();});
+}
+function onQuoteCheck(chk,id,idx){
+  if(chk.checked) QUOTE_SEL.add({id,idx,row:chk.closest('tr')}); else QUOTE_SEL.forEach((v,i)=>{if(v.id===id)QUOTE_SEL.delete(v);});
+  _updateSelCount('QUOTE_SEL','quote-sel-count','quote-export-sel-btn');
+  chk.closest('tr').classList.toggle('selected-row',chk.checked);
 }
 function changeQuotePage(delta){
   QUOTE_PAGER.page=Math.max(1,QUOTE_PAGER.page+delta);
@@ -3057,6 +3197,53 @@ async function handleReplyUpload(input){
     }
   }catch(e){result.textContent='Network error';alert('Upload failed: '+e.message);}
   input.value='';
+}
+
+// ── Export Selected functions (sequential IDs, not DB IDs) ──
+function exportSelectedDomains(){
+  if(!DOMAIN_SEL.size){alert('No rows selected');return;}
+  const rows=[...DOMAIN_SEL].sort((a,b)=>a.idx-b.idx);
+  const csv='\uFEFF'+['#','Domain','Source','Status','Claimed By','Priority','Created'].join(',')+'\n'+
+    rows.map((r,i)=>{
+      const tr=r.row||document.querySelector(`#domain-table tr[data-id="${r.id}"]`);
+      const tds=tr?tr.querySelectorAll('td'):[];
+      return [i+1, tds[2]?tds[2].textContent:'', tds[3]?tds[3].textContent:'', tds[4]?tds[4].textContent:'', tds[5]?tds[5].textContent:'', tds[6]?tds[6].textContent:'', tds[7]?tds[7].textContent.slice(0,16):''].map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',');
+    }).join('\n');
+  _downloadCSV(csv,'selected_domains.csv');
+}
+function exportSelectedEmails(){
+  if(!EMAIL_SEL.size){alert('No rows selected');return;}
+  const rows=[...EMAIL_SEL].sort((a,b)=>a.idx-b.idx);
+  const csv='\uFEFF'+['#','Email','Domain','Send Status','Source'].join(',')+'\n'+
+    rows.map((r,i)=>{
+      const tr=r.row||document.querySelector(`#email-table tr[data-id="${r.id}"]`);
+      const tds=tr?tr.querySelectorAll('td'):[];
+      return [i+1, tds[2]?tds[2].textContent:'', tds[3]?tds[3].textContent:'', tds[4]?tds[4].textContent:'', tds[6]?tds[6].textContent:''].map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',');
+    }).join('\n');
+  _downloadCSV(csv,'selected_emails.csv');
+}
+function exportSelectedQuotes(){
+  if(!QUOTE_SEL.size){alert('No rows selected');return;}
+  const rows=[...QUOTE_SEL].sort((a,b)=>a.idx-b.idx);
+  // Jenny CSV template columns (without 6 Niche Price columns) + 8 standard fields as separate columns
+  const headers=['#','Link','Price (USD)','Backlink Type','DR','DA','Ref. Domains','Traffic','Country','Keywords','Categories','Languages','TAT','Permanence','Contact','Cooperation','Payment','Discount','Link Rules','Content','Requirements','Extra Services','Supplier','其他'];
+  const csv='\uFEFF'+headers.join(',')+'\n'+
+    rows.map((r,i)=>{
+      const tr=r.row||document.querySelector(`#quote-table tr[data-id="${r.id}"]`);
+      const tds=tr?tr.querySelectorAll('td'):[];
+      // td[0]=checkbox, td[1]=#, td[2]=Link, td[3]=Price, ... td[17]=其他
+      const vals=[];
+      for(let c=2;c<tds.length;c++) vals.push(tds[c]?tds[c].textContent:'');
+      return [i+1,...vals].map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',');
+    }).join('\n');
+  _downloadCSV(csv,'selected_quotes_jenny_format.csv');
+}
+function _downloadCSV(content,filename){
+  const blob=new Blob([content],{type:'text/csv;charset=utf-8'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');a.href=url;a.download=filename;
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 async function exportDomains(){

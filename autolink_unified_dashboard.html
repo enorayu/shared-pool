@@ -47,6 +47,30 @@ body{font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei"
 .section{background:var(--card-bg);border:1px solid var(--card-border);border-radius:12px;padding:18px;margin-bottom:16px}
 .section-title{font-size:14px;font-weight:600;margin-bottom:12px;display:flex;align-items:center;gap:8px}
 
+/* Orchestrator control bar */
+.orch-bar{background:var(--card-bg);border:1px solid var(--card-border);border-radius:12px;padding:14px 16px;margin-bottom:16px}
+.orch-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.orch-head .title{font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px}
+.orch-head .title .dot{width:7px;height:7px;border-radius:50%;background:var(--green);animation:pulse 2s infinite}
+.orch-head .restart-all{padding:5px 14px;border-radius:8px;font-size:11px;font-weight:500;background:rgba(245,158,11,.12);color:var(--amber);border:1px solid rgba(245,158,11,.3);cursor:pointer;font-family:inherit;transition:all .2s}
+.orch-head .restart-all:hover{background:rgba(245,158,11,.2)}
+.orch-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
+.orch-mod{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:rgba(255,255,255,.02);border:1px solid var(--card-border);border-radius:9px}
+.orch-mod .info{display:flex;flex-direction:column;gap:2px}
+.orch-mod .mname{font-size:12px;font-weight:500}
+.orch-mod .mstatus{font-size:10px;color:var(--text3)}
+.orch-mod .mstatus.run{color:var(--green)}
+.orch-mod .mstatus.stop{color:var(--coral)}
+.orch-mod .mbtns{display:flex;gap:6px}
+.orch-mod .mbtn{padding:4px 10px;border-radius:7px;font-size:11px;font-weight:500;cursor:pointer;font-family:inherit;border:1px solid transparent;transition:all .2s}
+.orch-mod .mbtn.stop{background:rgba(239,68,68,.12);color:var(--coral);border-color:rgba(239,68,68,.3)}
+.orch-mod .mbtn.stop:hover{background:rgba(239,68,68,.2)}
+.orch-mod .mbtn.start{background:rgba(34,197,94,.12);color:var(--green);border-color:rgba(34,197,94,.3)}
+.orch-mod .mbtn.start:hover{background:rgba(34,197,94,.2)}
+.orch-mod .mbtn.restart{background:rgba(59,130,246,.12);color:var(--blue);border-color:rgba(59,130,246,.3)}
+.orch-mod .mbtn.restart:hover{background:rgba(59,130,246,.2)}
+.orch-mod .mbtn:disabled{opacity:.4;cursor:not-allowed}
+
 /* Table */
 table{width:100%;border-collapse:collapse;font-size:12px}
 th{text-align:left;padding:8px 10px;color:var(--text3);font-weight:500;border-bottom:1px solid var(--card-border);white-space:nowrap}
@@ -122,8 +146,18 @@ tr:hover td{background:rgba(255,255,255,.02)}
   <button class="nav-btn active" data-tab="overview">总览</button>
   <button class="nav-btn" data-tab="send">发信监控</button>
   <button class="nav-btn" data-tab="reply">回复中心</button>
+  <button class="nav-btn" data-tab="domain">域名中心</button>
   <button class="nav-btn" data-tab="pool">Shared Pool</button>
   <button class="nav-btn" data-tab="logs">系统日志</button>
+</div>
+
+<!-- ===== AutoLink OS 编排控制 ===== -->
+<div class="orch-bar" id="orch-bar">
+  <div class="orch-head">
+    <div class="title"><span class="dot"></span>AutoLink OS 模块编排</div>
+    <button class="restart-all" id="orch-restart-all">全部重启</button>
+  </div>
+  <div class="orch-grid" id="orch-grid"><!-- JS 渲染 5 模块 --></div>
 </div>
 
 <!-- ===== Tab: 总览 ===== -->
@@ -198,6 +232,34 @@ tr:hover td{background:rgba(255,255,255,.02)}
   </div>
 </div>
 
+<!-- ===== Tab: 域名中心 ===== -->
+<div class="tab-content" id="tab-domain">
+  <div class="cards" id="domain-cards"></div>
+  <div class="section">
+    <div class="section-title">域名管理</div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;align-items:center">
+      <label style="font-size:12px;color:var(--text3)">My Name</label>
+      <input id="domain-user" placeholder="your name" style="width:100px;padding:4px 8px;font-size:12px;border:0.5px solid var(--card-border);border-radius:6px;background:var(--bg);color:var(--text)" onchange="saveUserName()">
+      <button class="btn" style="padding:4px 12px;border-radius:6px;border:1px solid var(--card-border);background:transparent;color:var(--text2);cursor:pointer;font-family:inherit;font-size:12px" onclick="exportDomains()">Export CSV</button>
+      <a class="btn" style="padding:4px 12px;border-radius:6px;border:1px solid var(--card-border);background:transparent;color:var(--text2);cursor:pointer;font-family:inherit;font-size:12px;text-decoration:none;display:inline-block" href="https://shared-pool.onrender.com" target="_blank">Open Collection Page</a>
+      <span id="domain-export-result" style="font-size:12px;color:var(--muted)"></span>
+    </div>
+    <table id="domain-center-table"><tr><th>Domain</th><th>Status</th><th>Claimed By</th><th>Priority</th><th>Created</th></tr></table>
+    <!-- Domain center pagination -->
+    <div class="log-filter-group" id="domain-center-pagination" style="justify-content:center;margin-top:8px;display:none">
+      <button class="btn" onclick="changeDomainCenterPage(-1)" style="padding:4px 12px;border-radius:6px;border:1px solid var(--card-border);background:transparent;color:var(--text2);cursor:pointer;font-family:inherit;font-size:11px">Prev</button>
+      <span id="domain-center-page-info" style="font-size:12px;color:var(--text3);margin:0 12px">Page 1 / 1</span>
+      <button class="btn" onclick="changeDomainCenterPage(1)" style="padding:4px 12px;border-radius:6px;border:1px solid var(--card-border);background:transparent;color:var(--text2);cursor:pointer;font-family:inherit;font-size:11px">Next</button>
+      <label style="font-size:12px;color:var(--text3);margin-left:16px">Per page:</label>
+      <select id="domain-center-page-size" onchange="onDomainCenterPageSizeChange()" style="padding:4px 8px;font-size:12px;border:0.5px solid var(--card-border);border-radius:6px;background:var(--bg);color:var(--text)">
+        <option value="20">20</option>
+        <option value="50" selected>50</option>
+        <option value="100">100</option>
+      </select>
+    </div>
+  </div>
+</div>
+
 <!-- ===== Tab: Shared Pool ===== -->
 <div class="tab-content" id="tab-pool">
   <div class="cards" id="sp-cards"></div>
@@ -234,7 +296,7 @@ tr:hover td{background:rgba(255,255,255,.02)}
 
 <script>
 const MAISUI_API = 'http://127.0.0.1:8899';
-const SP_API = 'http://127.0.0.1:8765';
+const SP_API = 'https://shared-pool.onrender.com';
 
 let lastMaisuiData = null;
 let lastSpData = null;
@@ -246,6 +308,15 @@ let countdownTimer = null;
 
 function fmt(n){ return (n||0).toLocaleString(); }
 function now(){ return new Date().toLocaleTimeString('zh-CN',{hour12:false}); }
+function esc(s){return String(s||'').replace(/</g,'&lt;').slice(0,80)}
+
+function getUserName(){
+  return document.getElementById('domain-user').value.trim()||localStorage.getItem('sp_user')||'';
+}
+function saveUserName(){
+  const v=document.getElementById('domain-user').value.trim();
+  if(v) localStorage.setItem('sp_user',v);
+}
 
 function addLog(type,msg){
   logs.unshift({t:now(),type,msg});
@@ -291,6 +362,7 @@ document.getElementById('main-nav').addEventListener('click', e=>{
   if(lastMaisuiData) renderMailAccounts(lastMaisuiData);
   if(lastMaisuiData) renderReplies(lastMaisuiData);
   if(lastSpData) renderSharedPool(lastSpData);
+  if(lastSpData) renderDomainCenter(lastSpData);
 });
 
 // ── Send provider sub-nav ──
@@ -389,7 +461,11 @@ function renderMailAccounts(maisui){
   // Filter by provider
   let filtered = accts;
   if(currentProv !== 'all'){
-    filtered = accts.filter(a => (a.provider||'') === currentProv);
+    if(currentProv === 'Zoho'){
+      filtered = accts.filter(a => (a.provider||'').startsWith('Zoho'));
+    } else {
+      filtered = accts.filter(a => (a.provider||'') === currentProv);
+    }
   }
 
   // Sort by today desc
@@ -490,6 +566,72 @@ function renderSharedPool(sp){
     .map(r=>`<tr><td>${r.s}</td><td>${fmt(r.v)}</td></tr>`).join('');
 }
 
+// ── Domain Center ──
+const DOMAIN_CENTER_PAGER={page:1,pageSize:50};
+let domainCenterData=null;
+
+function renderDomainCenter(sp){
+  if(!sp) return;
+  document.getElementById('domain-cards').innerHTML = [
+    {l:'域名池总量',v:fmt(sp.domain_total),c:'blue',s:`New ${fmt(sp.domain_new||0)} / Contacted ${fmt(sp.domain_contacted||0)}`},
+    {l:'待处理',v:fmt(sp.domain_new||0),c:'amber',s:'未分配域名'},
+    {l:'已联系',v:fmt(sp.domain_contacted||0),c:'green',s:'已发送开发信'},
+    {l:'已回复',v:fmt(sp.domain_replied||0),c:'purple',s:'收到回复'},
+  ].map(c=>`<div class="card"><div class="label">${c.l}</div><div class="value ${c.c}">${c.v}</div><div class="sub">${c.s}</div></div>`).join('');
+  loadDomainCenterTable();
+}
+
+async function loadDomainCenterTable(){
+  const limit=DOMAIN_CENTER_PAGER.pageSize;
+  const offset=(DOMAIN_CENTER_PAGER.page-1)*limit;
+  try{
+    const r=await fetch(SP_API+'/api/domain/list?limit='+limit+'&offset='+offset,{signal:AbortSignal.timeout(30000)});
+    const data=await r.json();
+    const domains=data.domains||[];
+    const total=data.unique_total||data.total||0;
+    const maxPage=Math.max(1,Math.ceil(total/limit));
+    if(DOMAIN_CENTER_PAGER.page>maxPage){DOMAIN_CENTER_PAGER.page=maxPage;}
+    document.getElementById('domain-center-table').innerHTML='<tr><th>Domain</th><th>Status</th><th>Claimed By</th><th>Priority</th><th>Created</th></tr>'+
+      domains.map(d=>`<tr>
+        <td><a href="http://${esc(d.domain)}" target="_blank" style="color:var(--blue);text-decoration:none">${esc(d.domain)}</a></td>
+        <td><span class="badge" style="background:rgba(59,130,246,.12);color:var(--blue)">${d.collection_status||'New'}</span></td>
+        <td>${esc(d.claimed_by)||'-'}</td>
+        <td>${d.priority||0}</td>
+        <td>${(d.created_at||'').slice(0,16)}</td>
+      </tr>`).join('');
+    document.getElementById('domain-center-page-info').textContent='Page '+DOMAIN_CENTER_PAGER.page+' / '+maxPage+' ('+total+' records)';
+    document.getElementById('domain-center-pagination').style.display=total>limit?'flex':'none';
+  }catch(e){
+    document.getElementById('domain-center-table').innerHTML='<tr><th>Domain</th><th>Status</th><th>Claimed By</th><th>Priority</th><th>Created</th></tr><tr><td colspan="5" style="text-align:center;color:var(--text3);padding:20px">加载失败: '+esc(e.message)+'</td></tr>';
+  }
+}
+function changeDomainCenterPage(delta){
+  DOMAIN_CENTER_PAGER.page=Math.max(1,DOMAIN_CENTER_PAGER.page+delta);
+  loadDomainCenterTable();
+}
+function onDomainCenterPageSizeChange(){
+  DOMAIN_CENTER_PAGER.pageSize=parseInt(document.getElementById('domain-center-page-size').value)||50;
+  DOMAIN_CENTER_PAGER.page=1;
+  loadDomainCenterTable();
+}
+async function exportDomains(){
+  const user=document.getElementById('domain-user').value.trim()||getUserName()||'unknown';
+  if(!user){alert('Please enter your name');return;}
+  const result=document.getElementById('domain-export-result');
+  result.textContent='Exporting...';
+  try{
+    const r=await fetch(SP_API+'/api/domain/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user,count:10000}),signal:AbortSignal.timeout(60000)});
+    const data=await r.json();
+    if(data.error){result.textContent='Error: '+data.error;}
+    else{
+      result.textContent='OK: exported '+data.exported+' domains';
+      if(data.download_url){
+        const a=document.createElement('a');a.href=SP_API+data.download_url;a.download='domains.csv';a.click();
+      }
+    }
+  }catch(e){result.textContent='Network error';}
+}
+
 // ── Refresh ──
 async function refreshAll(){
   clearInterval(countdownTimer);
@@ -516,8 +658,8 @@ async function refreshAll(){
     addLog('sys','Shared Pool 数据刷新: '+fmt(lastSpData.domain_total||0)+' 域名, A类 '+fmt(lastSpData.reply_a||0)+' 条');
   }catch(e){
     spErr = true;
-    addLog('err','Shared Pool 数据源 (port 8765) 连接失败: '+e.message);
-    if(!lastSpData) showWarning('Shared Pool 数据源 (port 8765) 连接失败');
+    addLog('err','Shared Pool 数据源 (shared-pool.onrender.com) 连接失败: '+e.message);
+    if(!lastSpData) showWarning('Shared Pool 数据源 (shared-pool.onrender.com) 连接失败');
   }
 
   updateSystemStatus(maisuiErr, spErr);
@@ -531,6 +673,7 @@ async function refreshAll(){
   if(currentTab==='send') renderMailAccounts(lastMaisuiData);
   if(currentTab==='reply') renderReplies(lastMaisuiData);
   if(currentTab==='pool') renderSharedPool(lastSpData);
+  if(currentTab==='domain') renderDomainCenter(lastSpData);
 
   document.getElementById('refresh-time').textContent = '上次刷新: '+now();
   document.getElementById('header-sub').textContent =
@@ -549,8 +692,104 @@ function startCountdown(){
   },1000);
 }
 
+// ── AutoLink OS 编排控制条 ──
+const ORCH_MODULES = {
+  1: {name:'域名爬虫',     desc:'Demo01 爬取原始域名'},
+  2: {name:'域名导入SP',   desc:'Demo02 同步到 domain_pool'},
+  3: {name:'麦穗采集',     desc:'Demo03 建任务+导入邮箱'},
+  4: {name:'发信补池',     desc:'Demo04/05 待发池监控'},
+  5: {name:'退信回复扫描', desc:'scan_inbox 增量扫描'},
+};
+
+async function loadOrchestratorStatus(){
+  try{
+    const resp = await fetch(MAISUI_API+'/api/orchestrator/status',{signal:AbortSignal.timeout(8000)});
+    if(!resp.ok) throw new Error('HTTP '+resp.status);
+    return await resp.json();
+  }catch(e){
+    return null;
+  }
+}
+
+function renderOrchestrator(data){
+  const grid = document.getElementById('orch-grid');
+  if(!grid) return;
+  if(!data || data.error){
+    grid.innerHTML = '<div style="color:var(--text3);font-size:12px;grid-column:1/-1">编排器未加载（运行副本非 D 盘时此功能不可用）</div>';
+    return;
+  }
+  const mods = data.modules || {};
+  let html = '';
+  for(const mid of Object.keys(ORCH_MODULES)){
+    const m = mods[mid] || {};
+    const running = m.running;
+    const statusTxt = running ? '● 运行中' : '○ 已暂停';
+    const statusCls = running ? 'run' : 'stop';
+    const lastRun = m.last_run ? m.last_run.replace('T',' ').slice(5) : '—';
+    const restartCnt = m.restart_count || 0;
+    const rcTxt = restartCnt>0 ? ` · 重启${restartCnt}次` : '';
+    html += `
+      <div class="orch-mod">
+        <div class="info">
+          <div class="mname">${mid}. ${ORCH_MODULES[mid].name}</div>
+          <div class="mstatus ${statusCls}">${statusTxt} · 上次 ${lastRun}${rcTxt}</div>
+        </div>
+        <div class="mbtns">
+          ${running
+            ? `<button class="mbtn stop" data-act="stop" data-mid="${mid}">暂停</button>`
+            : `<button class="mbtn start" data-act="start" data-mid="${mid}">启动</button>`}
+          <button class="mbtn restart" data-act="restart" data-mid="${mid}">重启</button>
+        </div>
+      </div>`;
+  }
+  grid.innerHTML = html;
+}
+
+async function orchControl(action, mid){
+  let url;
+  if(action==='stop')    url = MAISUI_API+'/api/orchestrator/stop/'+mid;
+  else if(action==='start')  url = MAISUI_API+'/api/orchestrator/start/'+mid;
+  else if(action==='restart')url = MAISUI_API+'/api/orchestrator/restart/'+mid;
+  try{
+    await fetch(url,{signal:AbortSignal.timeout(8000)});
+  }catch(e){ /* 忽略，下次轮询会反映真实状态 */ }
+  // 立即刷新状态
+  renderOrchestrator(await loadOrchestratorStatus());
+}
+
+// 事件委托：编排控制条按钮
+document.addEventListener('click', (e)=>{
+  const btn = e.target.closest('.orch-mod .mbtn');
+  if(!btn) return;
+  const act = btn.getAttribute('data-act');
+  const mid = btn.getAttribute('data-mid');
+  btn.disabled = true;
+  orchControl(act, mid);
+});
+
+// 全部重启
+const orchRestartAllBtn = document.getElementById('orch-restart-all');
+if(orchRestartAllBtn){
+  orchRestartAllBtn.addEventListener('click', async ()=>{
+    orchRestartAllBtn.disabled = true;
+    try{ await fetch(MAISUI_API+'/api/orchestrator/restart',{method:'POST',signal:AbortSignal.timeout(8000)}); }catch(e){}
+    renderOrchestrator(await loadOrchestratorStatus());
+    orchRestartAllBtn.disabled = false;
+  });
+}
+
+// 编排状态轮询（每 15s）
+let orchTimer = null;
+async function refreshOrchestrator(){
+  renderOrchestrator(await loadOrchestratorStatus());
+}
+orchTimer = setInterval(refreshOrchestrator, 15000);
+
 // ── Init ──
+const savedUser=localStorage.getItem('sp_user');
+if(savedUser) document.getElementById('domain-user').value=savedUser;
 addLog('sys','AutoLink OS 统一监控面板 启动');
+refreshOrchestrator();
 refreshAll();
 </script>
 </body>
