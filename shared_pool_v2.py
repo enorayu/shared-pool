@@ -322,6 +322,7 @@ def _log_operation(op_type, user, table_name, count, detail=""):
         logs = []
 
     log_entry = {
+        "log_id": str(int(time.time() * 1000)) + str(uuid.uuid4().hex[:6]),
         "time": now_iso(),
         "type": op_type,
         "user": user or "unknown",
@@ -1447,6 +1448,35 @@ def quote_export():
     )
 
 
+@app.route("/api/quote/delete", methods=["POST"])
+def quote_delete():
+    """Delete quotes by quote_id list."""
+    data = request.get_json(force=True, silent=True) or {}
+    ids = data.get("ids") or []
+    if not ids:
+        return jsonify({"error": "no ids provided"}), 400
+    # quote_id is int in DB; coerce
+    ids = [int(x) for x in ids if str(x).isdigit()]
+    if not ids:
+        return jsonify({"error": "invalid ids"}), 400
+    try:
+        resp = requests.post(
+            f"{SUPABASE_URL}/rest/v1/quote_pool?quote_id=in.({','.join(str(i) for i in ids)})",
+            headers={**AUTH_HEADERS, "Prefer": "return=minimal"},
+            json={},
+        )
+        # Supabase delete via POST with empty body is not standard; use DELETE
+        resp = requests.delete(
+            f"{SUPABASE_URL}/rest/v1/quote_pool?quote_id=in.({','.join(str(i) for i in ids)})",
+            headers=AUTH_HEADERS,
+        )
+        if resp.status_code >= 400:
+            return jsonify({"error": f"delete failed: {resp.status_code} {resp.text[:200]}"}), 500
+        return jsonify({"deleted": len(ids), "ids": ids})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/quote/import-a-replies", methods=["POST"])
 def quote_import_a_replies():
     """
@@ -2030,6 +2060,25 @@ def log_list():
     return jsonify({"logs": logs, "count": len(logs)})
 
 
+@app.route("/api/log/delete", methods=["POST"])
+def log_delete():
+    """Delete operation log entries by log_id list."""
+    data = request.get_json(force=True, silent=True) or {}
+    ids = data.get("ids") or []
+    if not ids:
+        return jsonify({"error": "no ids provided"}), 400
+    try:
+        raw = _get_config("operation_logs", "[]")
+        logs = json.loads(raw) if raw else []
+        before = len(logs)
+        logs = [l for l in logs if l.get("log_id") not in ids]
+        removed = before - len(logs)
+        _set_config("operation_logs", json.dumps(logs, ensure_ascii=False), "Operation logs")
+        return jsonify({"deleted": removed, "remaining": len(logs)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 # ════════════════════════════════════════════════════════════
 
 EMAIL_POOL_SQL = """-- Run this in Supabase SQL Editor to create the email_pool table:
@@ -2254,7 +2303,6 @@ tr.selected-row td{background:#e8f4fd}
   <div class="cards" id="domain-cards"></div>
   <div class="actions">
     <button class="btn" onclick="exportDomains()">Export NEW domains</button>
-    <button class="export-sel-btn" id="domain-export-sel-btn" onclick="exportSelectedDomains()" disabled>Export Selected (<span id="domain-sel-count">0</span>)</button>
     <button class="btn green" onclick="distributeDomains()">Distribute to team</button>
     <button class="btn amber" onclick="toggleImport()">Import domains</button>
   </div>
@@ -2290,7 +2338,7 @@ tr.selected-row td{background:#e8f4fd}
     </div>
     <div style="font-size:11px;color:var(--muted);margin-top:4px">Comma-separated usernames. Distribute assigns domains round-robin to these members.</div>
   </div>
-  <table id="domain-table"><tr><th><input type="checkbox" class="chk-all" onchange="toggleDomainAll(this)" title="Select All"></th><th>#</th><th>Domain</th><th>Source</th><th>Status</th><th>Claimed By</th><th>Priority</th><th>Created</th></tr></table>
+  <table id="domain-table"><tr><th>序号</th><th>Domain</th><th>Source</th><th>Status</th><th>Claimed By</th><th>Priority</th><th>Created</th></tr></table>
   <!-- Domain pagination -->
   <div class="log-filter-group" id="domain-pagination" style="justify-content:center;margin-top:8px;display:none">
     <button class="btn" onclick="changeDomainPage(-1)">Prev</button>
@@ -2310,7 +2358,6 @@ tr.selected-row td{background:#e8f4fd}
   <div class="cards" id="email-cards"></div>
   <div class="actions">
     <button class="btn" onclick="exportEmails()">Export send queue</button>
-    <button class="export-sel-btn" id="email-export-sel-btn" onclick="exportSelectedEmails()" disabled>Export Selected (<span id="email-sel-count">0</span>)</button>
     <label style="font-size:12px;color:var(--muted)">My Name</label><input id="e-user" placeholder="your name" style="width:100px" onchange="saveUserName()">
     <label style="font-size:12px;color:var(--muted)">Count</label><input id="e-count" value="1000" type="number" style="width:80px">
     <button class="btn green" onclick="toggleEmailImport()">Import emails</button>
@@ -2331,7 +2378,7 @@ tr.selected-row td{background:#e8f4fd}
       <span id="email-import-result" style="font-size:12px;color:var(--muted)"></span>
     </div>
   </div>
-  <table id="email-table"><tr><th><input type="checkbox" class="chk-all" onchange="toggleEmailAll(this)" title="Select All"></th><th>#</th><th>Email</th><th>Domain</th><th>Send Status</th><th>Claimed By</th><th>Source</th><th>Created</th></tr></table>
+  <table id="email-table"><tr><th>序号</th><th>Email</th><th>Domain</th><th>Send Status</th><th>Claimed By</th><th>Source</th><th>Created</th></tr></table>
   <!-- Email pagination -->
   <div class="log-filter-group" id="email-pagination" style="justify-content:center;margin-top:8px;display:none">
     <button class="btn" onclick="changeEmailPage(-1)">Prev</button>
@@ -2368,7 +2415,7 @@ tr.selected-row td{background:#e8f4fd}
     <button class="btn" style="font-size:11px" onclick="downloadReplyTemplate()">Download Template</button>
     <span id="reply-import-result" style="font-size:12px;color:var(--muted)"></span>
   </div>
-  <table id="reply-table"><tr><th><input type="checkbox" class="chk-all" onchange="toggleReplyAll(this)" title="Select All"></th><th>#</th><th>Email</th><th>Domain</th><th>Category</th><th>Status</th><th>Supplier</th><th>Reply Time</th><th>Content</th></tr></table>
+  <table id="reply-table"><tr><th><input type="checkbox" class="chk-all" onchange="toggleReplyAll(this)" title="Select All"></th><th>序号</th><th>Email</th><th>Domain</th><th>Category</th><th>Status</th><th>Supplier</th><th>Reply Time</th><th>Content</th></tr></table>
   <!-- Reply pagination -->
   <div class="log-filter-group" id="reply-pagination" style="justify-content:center;margin-top:8px;display:none">
     <button class="btn" onclick="changeReplyPage(-1)">Prev</button>
@@ -2387,7 +2434,8 @@ tr.selected-row td{background:#e8f4fd}
 <div class="page" id="page-quote">
   <div class="cards" id="quote-cards"></div>
   <div class="actions">
-    <button class="export-sel-btn" id="quote-export-sel-btn" onclick="exportSelectedQuotes()" disabled>Export Selected (<span id="quote-sel-count">0</span>)</button>
+    <button class="btn" id="quote-export-btn" onclick="exportQuotes()">Export CSV</button>
+    <button class="btn red" id="quote-delete-btn" onclick="deleteSelectedQuotes()" style="display:none">Delete Selected (<span id="quote-sel-count">0</span>)</button>
     <a class="btn" href="/api/quote/export" target="_blank">Export All CSV</a>
     <label style="font-size:12px;color:var(--muted)">My Name</label><input id="q-user" placeholder="your name" style="width:100px" onchange="saveUserName()">
     <button class="btn green" onclick="importARepliesToQuotes()">Import A-class replies</button>
@@ -2406,10 +2454,11 @@ tr.selected-row td{background:#e8f4fd}
   </div>
   <div style="overflow-x:auto">
   <table id="quote-table"><tr>
-    <th><input type="checkbox" class="chk-all" onchange="toggleQuoteAll(this)" title="Select All"></th><th>#</th>
+    <th><input type="checkbox" class="chk-all" onchange="toggleQuoteAll(this)" title="Select All"></th><th>序号</th>
     <th>Link</th><th>Price (USD)</th><th>Backlink Type</th><th>DR</th><th>DA</th>
     <th>Ref. Domains</th><th>Traffic</th><th>Country</th><th>Keywords</th>
-    <th>Categories</th><th>Languages</th><th>TAT</th><th>Permanence</th><th>Contact</th><th>其他</th>
+    <th>Categories</th><th>Languages</th><th>TAT</th><th>Permanence</th><th>Contact</th>
+    <th>Cooperation</th><th>Payment</th><th>Discount</th><th>Link Rules</th><th>Content</th><th>Requirements</th><th>Extra Services</th><th>Supplier</th><th>其他</th>
   </tr></table>
   </div>
   <!-- Quote pagination -->
@@ -2454,10 +2503,11 @@ tr.selected-row td{background:#e8f4fd}
     <select id="log-user-filter" onchange="renderLogPage()" style="padding:4px 10px;font-size:12px;border:0.5px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text)">
       <option value="">All Users</option>
     </select>
+    <button class="btn red" id="log-delete-btn" onclick="deleteSelectedLogs()" style="display:none">Delete Selected (<span id="log-sel-count">0</span>)</button>
     <button class="btn" onclick="refreshLogs()" style="margin-left:auto">Refresh</button>
   </div>
 
-  <table id="log-table"><tr><th>Time</th><th>User</th><th>Action</th><th>Table</th><th>Count</th><th>Detail</th></tr></table>
+  <table id="log-table"><tr><th><input type="checkbox" class="chk-all" onchange="toggleLogAll(this)" title="Select All"></th><th>序号</th><th>Time</th><th>User</th><th>Action</th><th>Pool</th><th>Count</th><th>Detail</th></tr></table>
 
   <!-- 分页控件 -->
   <div class="log-filter-group" id="log-pagination" style="justify-content:center;margin-top:8px">
@@ -2656,6 +2706,7 @@ const DOMAIN_SEL = new Set();
 const EMAIL_SEL = new Set();
 const REPLY_SEL = new Set();
 const QUOTE_SEL = new Set();
+const LOG_SEL = new Set();
 
 // ── Selection helpers ──
 function _updateSelCount(pool, countId, btnId){
@@ -2674,9 +2725,8 @@ async function loadDomainTable(){
   const maxPage=Math.max(1,Math.ceil(total/limit));
   if(DOMAIN_PAGER.page>maxPage){DOMAIN_PAGER.page=maxPage;}
   DOMAIN_SEL.clear();
-  document.getElementById('domain-table').innerHTML='<tr><th><input type="checkbox" class="chk-all" onchange="toggleDomainAll(this)" title="Select All"></th><th>#</th><th>Domain</th><th>Status</th><th>Claimed By</th><th>Priority</th><th>Created</th></tr>'+
+  document.getElementById('domain-table').innerHTML='<tr><th>序号</th><th>Domain</th><th>Status</th><th>Claimed By</th><th>Priority</th><th>Created</th></tr>'+
     (r.domains||[]).map((d,i)=>`<tr data-idx="${i}" data-id="${d.domain_id}">
-      <td><input type="checkbox" class="chk-row" onchange="onDomainCheck(this,${d.domain_id},${i})"></td>
       <td style="color:var(--muted);font-size:11.5px;text-align:center">${_getGlobalIdx(DOMAIN_PAGER.page,limit,i)}</td>
       <td>${esc(d.domain)}</td>
       <td><span class="status-${d.collection_status||'New'}">${d.collection_status||'New'}</span></td>
@@ -2684,17 +2734,8 @@ async function loadDomainTable(){
       <td>${d.priority||0}</td>
       <td>${(d.created_at||'').slice(0,16)}</td>
     </tr>`).join('');
-  _updateSelCount('DOMAIN_SEL','domain-sel-count','domain-export-sel-btn');
   document.getElementById('domain-page-info').textContent='Page '+DOMAIN_PAGER.page+' / '+maxPage+' ('+total+' records)';
   document.getElementById('domain-pagination').style.display=total>limit?'flex':'none';
-}
-function toggleDomainAll(chk){
-  document.querySelectorAll('#domain-table .chk-row').forEach(c=>{c.checked=chk.checked;c.onchange();});
-}
-function onDomainCheck(chk,id,idx){
-  if(chk.checked) DOMAIN_SEL.add({id,idx,row:chk.closest('tr')}); else DOMAIN_SEL.forEach((v,i)=>{if(v.id===id)DOMAIN_SEL.delete(v);});
-  _updateSelCount('DOMAIN_SEL','domain-sel-count','domain-export-sel-btn');
-  chk.closest('tr').classList.toggle('selected-row',chk.checked);
 }
 function changeDomainPage(delta){
   DOMAIN_PAGER.page=Math.max(1,DOMAIN_PAGER.page+delta);
@@ -2715,9 +2756,8 @@ async function loadEmailTable(){
   const maxPage=Math.max(1,Math.ceil(total/limit));
   if(EMAIL_PAGER.page>maxPage){EMAIL_PAGER.page=maxPage;}
   EMAIL_SEL.clear();
-  document.getElementById('email-table').innerHTML='<tr><th><input type="checkbox" class="chk-all" onchange="toggleEmailAll(this)" title="Select All"></th><th>#</th><th>Email</th><th>Domain</th><th>Send Status</th><th>Claimed By</th><th>Created</th></tr>'+
+  document.getElementById('email-table').innerHTML='<tr><th>序号</th><th>Email</th><th>Domain</th><th>Send Status</th><th>Claimed By</th><th>Created</th></tr>'+
     (r.emails||[]).map((e,i)=>`<tr data-idx="${i}" data-id="${e.email_id}">
-      <td><input type="checkbox" class="chk-row" onchange="onEmailCheck(this,${e.email_id},${i})"></td>
       <td style="color:var(--muted);font-size:11.5px;text-align:center">${_getGlobalIdx(EMAIL_PAGER.page,limit,i)}</td>
       <td>${esc(e.contact_email)}</td>
       <td>${esc(e.domain)}</td>
@@ -2725,17 +2765,8 @@ async function loadEmailTable(){
       <td>${esc(e.claimed_by)}</td>
       <td>${(e.created_at||'').slice(0,16)}</td>
     </tr>`).join('');
-  _updateSelCount('EMAIL_SEL','email-sel-count','email-export-sel-btn');
   document.getElementById('email-page-info').textContent='Page '+EMAIL_PAGER.page+' / '+maxPage+' ('+total+' records)';
   document.getElementById('email-pagination').style.display=total>limit?'flex':'none';
-}
-function toggleEmailAll(chk){
-  document.querySelectorAll('#email-table .chk-row').forEach(c=>{c.checked=chk.checked;c.onchange();});
-}
-function onEmailCheck(chk,id,idx){
-  if(chk.checked) EMAIL_SEL.add({id,idx,row:chk.closest('tr')}); else EMAIL_SEL.forEach((v,i)=>{if(v.id===id)EMAIL_SEL.delete(v);});
-  _updateSelCount('EMAIL_SEL','email-sel-count','email-export-sel-btn');
-  chk.closest('tr').classList.toggle('selected-row',chk.checked);
 }
 function changeEmailPage(delta){
   EMAIL_PAGER.page=Math.max(1,EMAIL_PAGER.page+delta);
@@ -2757,7 +2788,7 @@ async function loadReplyTable(cat){
   const maxPage=Math.max(1,Math.ceil(total/limit));
   if(REPLY_PAGER.page>maxPage){REPLY_PAGER.page=maxPage;}
   REPLY_SEL.clear();
-  document.getElementById('reply-table').innerHTML='<tr><th><input type="checkbox" class="chk-all" onchange="toggleReplyAll(this)" title="Select All"></th><th>#</th><th>Email</th><th>Domain</th><th>Category</th><th>Status</th><th>Supplier</th><th>Reply Time</th><th>Content</th></tr>'+
+  document.getElementById('reply-table').innerHTML='<tr><th><input type="checkbox" class="chk-all" onchange="toggleReplyAll(this)" title="Select All"></th><th>序号</th><th>Email</th><th>Domain</th><th>Category</th><th>Status</th><th>Supplier</th><th>Reply Time</th><th>Content</th></tr>'+
     (r.replies||[]).map((rp,i)=>`<tr data-idx="${i}" data-id="${rp.reply_id}">
       <td><input type="checkbox" class="chk-row" onchange="onReplyCheck(this,${rp.reply_id},${i})"></td>
       <td style="color:var(--muted);font-size:11.5px;text-align:center">${_getGlobalIdx(REPLY_PAGER.page,limit,i)}</td>
@@ -2798,7 +2829,7 @@ async function loadQuoteTable(){
   if(QUOTE_PAGER.page>maxPage){QUOTE_PAGER.page=maxPage;}
   QUOTE_SEL.clear();
   // Map quote_pool fields → Jenny CSV template columns (without 6 Niche Price cols)
-  document.getElementById('quote-table').innerHTML='<tr><th><input type="checkbox" class="chk-all" onchange="toggleQuoteAll(this)" title="Select All"></th><th>#</th>'+
+  document.getElementById('quote-table').innerHTML='<tr><th><input type="checkbox" class="chk-all" onchange="toggleQuoteAll(this)" title="Select All"></th><th>序号</th>'+
     '<th>Link</th><th>Price (USD)</th><th>Backlink Type</th><th>DR</th><th>DA</th>'+
     '<th>Ref. Domains</th><th>Traffic</th><th>Country</th><th>Keywords</th>'+
     '<th>Categories</th><th>Languages</th><th>TAT</th><th>Permanence</th><th>Contact</th>'+
@@ -2839,7 +2870,8 @@ async function loadQuoteTable(){
         <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;font-size:11px;color:var(--muted)" title="${esc(otherStr,500)}">${esc(otherStr,80)}</td>
       </tr>`;
     }).join('');
-  _updateSelCount('QUOTE_SEL','quote-sel-count','quote-export-sel-btn');
+  _updateSelCount('QUOTE_SEL','quote-sel-count','quote-delete-btn');
+  document.getElementById('quote-delete-btn').style.display=QUOTE_SEL.size?'inline-block':'none';
   document.getElementById('quote-page-info').textContent='Page '+QUOTE_PAGER.page+' / '+maxPage+' ('+total+' records)';
   document.getElementById('quote-pagination').style.display=total>limit?'flex':'none';
 }
@@ -2848,7 +2880,8 @@ function toggleQuoteAll(chk){
 }
 function onQuoteCheck(chk,id,idx){
   if(chk.checked) QUOTE_SEL.add({id,idx,row:chk.closest('tr')}); else QUOTE_SEL.forEach((v,i)=>{if(v.id===id)QUOTE_SEL.delete(v);});
-  _updateSelCount('QUOTE_SEL','quote-sel-count','quote-export-sel-btn');
+  _updateSelCount('QUOTE_SEL','quote-sel-count','quote-delete-btn');
+  document.getElementById('quote-delete-btn').style.display=QUOTE_SEL.size?'inline-block':'none';
   chk.closest('tr').classList.toggle('selected-row',chk.checked);
 }
 function changeQuotePage(delta){
@@ -3064,8 +3097,11 @@ function renderLogPage() {
 
   // Render table
   const table = document.getElementById('log-table');
-  table.innerHTML = '<tr><th>Time</th><th>User</th><th>Action</th><th>Pool</th><th>Count</th><th>Detail</th></tr>' +
-    pageLogs.map(l => `<tr>
+  const startIdx = start;
+  table.innerHTML = '<tr><th><input type="checkbox" class="chk-all" onchange="toggleLogAll(this)" title="Select All"></th><th>序号</th><th>Time</th><th>User</th><th>Action</th><th>Pool</th><th>Count</th><th>Detail</th></tr>' +
+    pageLogs.map((l, i) => `<tr data-id="${esc(l.log_id)}">
+      <td><input type="checkbox" class="chk-row" onchange="onLogCheck(this,'${esc(l.log_id)}')"></td>
+      <td style="color:var(--muted);font-size:11.5px;text-align:center">${startIdx + i + 1}</td>
       <td>${esc((l.time || '').slice(0, 16))}</td>
       <td>${esc(l.user)}</td>
       <td><span class="status-${l.type || 'New'}">${_logActionShort(l.type)}</span></td>
@@ -3222,21 +3258,56 @@ function exportSelectedEmails(){
     }).join('\n');
   _downloadCSV(csv,'selected_emails.csv');
 }
-function exportSelectedQuotes(){
+function exportQuotes(){
+  // If rows are selected → export only selected (Jenny format CSV)
+  // If none selected → export all via backend (same format)
+  if(QUOTE_SEL.size){
+    const rows=[...QUOTE_SEL].sort((a,b)=>a.idx-b.idx);
+    const headers=['序号','Link','Price (USD)','Backlink Type','DR','DA','Ref. Domains','Traffic','Country','Keywords','Categories','Languages','TAT','Permanence','Contact','Cooperation','Payment','Discount','Link Rules','Content','Requirements','Extra Services','Supplier','其他'];
+    const csv='\uFEFF'+headers.join(',')+'\n'+
+      rows.map((r,i)=>{
+        const tr=r.row||document.querySelector(`#quote-table tr[data-id="${r.id}"]`);
+        const tds=tr?tr.querySelectorAll('td'):[];
+        const vals=[];
+        for(let c=2;c<tds.length;c++) vals.push(tds[c]?tds[c].textContent:'');
+        return [i+1,...vals].map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',');
+      }).join('\n');
+    _downloadCSV(csv,'selected_quotes_jenny_format.csv');
+  } else {
+    // No selection → open backend export-all in new tab
+    window.open('/api/quote/export','_blank');
+  }
+}
+async function deleteSelectedQuotes(){
   if(!QUOTE_SEL.size){alert('No rows selected');return;}
-  const rows=[...QUOTE_SEL].sort((a,b)=>a.idx-b.idx);
-  // Jenny CSV template columns (without 6 Niche Price columns) + 8 standard fields as separate columns
-  const headers=['#','Link','Price (USD)','Backlink Type','DR','DA','Ref. Domains','Traffic','Country','Keywords','Categories','Languages','TAT','Permanence','Contact','Cooperation','Payment','Discount','Link Rules','Content','Requirements','Extra Services','Supplier','其他'];
-  const csv='\uFEFF'+headers.join(',')+'\n'+
-    rows.map((r,i)=>{
-      const tr=r.row||document.querySelector(`#quote-table tr[data-id="${r.id}"]`);
-      const tds=tr?tr.querySelectorAll('td'):[];
-      // td[0]=checkbox, td[1]=#, td[2]=Link, td[3]=Price, ... td[17]=其他
-      const vals=[];
-      for(let c=2;c<tds.length;c++) vals.push(tds[c]?tds[c].textContent:'');
-      return [i+1,...vals].map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',');
-    }).join('\n');
-  _downloadCSV(csv,'selected_quotes_jenny_format.csv');
+  if(!confirm('Delete '+QUOTE_SEL.size+' selected quote(s)? This cannot be undone.'))return;
+  const ids=[...QUOTE_SEL].map(r=>r.id);
+  const r=await fetch(API+'/api/quote/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids})}).then(r=>r.json());
+  if(r.error){alert('Error: '+r.error);return;}
+  alert('Deleted '+r.deleted+' quote(s)');
+  QUOTE_SEL.clear();
+  loadQuoteTable();loadStats();
+}
+
+// ── Operation Log select/delete ──
+function toggleLogAll(chk){
+  document.querySelectorAll('#log-table .chk-row').forEach(c=>{c.checked=chk.checked;c.onchange();});
+}
+function onLogCheck(chk,id){
+  if(chk.checked) LOG_SEL.add(id); else LOG_SEL.delete(id);
+  document.getElementById('log-sel-count').textContent=LOG_SEL.size;
+  document.getElementById('log-delete-btn').style.display=LOG_SEL.size?'inline-block':'none';
+  chk.closest('tr').classList.toggle('selected-row',chk.checked);
+}
+async function deleteSelectedLogs(){
+  if(!LOG_SEL.size){alert('No rows selected');return;}
+  if(!confirm('Delete '+LOG_SEL.size+' selected log entr(y/ies)? This cannot be undone.'))return;
+  const ids=[...LOG_SEL];
+  const r=await fetch(API+'/api/log/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids})}).then(r=>r.json());
+  if(r.error){alert('Error: '+r.error);return;}
+  alert('Deleted '+r.deleted+' log entries');
+  LOG_SEL.clear();
+  refreshLogs();
 }
 function _downloadCSV(content,filename){
   const blob=new Blob([content],{type:'text/csv;charset=utf-8'});
