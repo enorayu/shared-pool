@@ -725,8 +725,11 @@ def email_queue():
     user = request.args.get("user", "")
     count = min(int(request.args.get("count", 100)), 2000)
     offset = int(request.args.get("offset", 0))
+    claimed_by_filter = request.args.get("claimed_by", "")
 
     filters = {"send_status": "UNSENT"}
+    if claimed_by_filter:
+        filters["claimed_by"] = claimed_by_filter
 
     emails = db.select(
         "email_pool",
@@ -1181,6 +1184,7 @@ def reply_list():
     Falls back to supplier_pool if reply_pool is empty (legacy data)."""
     category = request.args.get("category", "")
     status = request.args.get("status", "")
+    user = request.args.get("user", "")
     limit = min(int(request.args.get("limit", 100)), 5000)
     offset = int(request.args.get("offset", 0))
 
@@ -1190,6 +1194,8 @@ def reply_list():
         filters["category"] = category.upper()
     if status:
         filters["status"] = status
+    if user:
+        filters["imported_by"] = user
 
     replies = db.select(
         "reply_pool",
@@ -1331,6 +1337,7 @@ def quote_list():
     domain = request.args.get("domain", "")
     status = request.args.get("status", "")
     niche = request.args.get("niche", "")
+    supplier = request.args.get("supplier", "")
     limit = min(int(request.args.get("limit", 100)), 1000)
     offset = int(request.args.get("offset", 0))
 
@@ -1341,6 +1348,8 @@ def quote_list():
         filters["status"] = status
     if niche:
         filters["niche"] = niche
+    if supplier:
+        filters["supplier"] = supplier
 
     quotes = db.select(
         "quote_pool",
@@ -1860,6 +1869,8 @@ def get_stats():
             email_bounce = 0
 
         reply_total = reply_a = reply_b = reply_c = reply_unread = 0
+        reply_today_a = reply_today_b = reply_today_c = 0
+        today_str = datetime.now().strftime('%Y-%m-%d')
         try:
             reply_total = db.count("reply_pool")
             if reply_total > 0:
@@ -1867,6 +1878,26 @@ def get_stats():
                 reply_b = db.count("reply_pool", filters={"category": "B"})
                 reply_c = db.count("reply_pool", filters={"category": "C"})
                 reply_unread = db.count("reply_pool", filters={"status": "New"})
+                # Today's new replies (by created_at or discovered_at)
+                try:
+                    today_replies = db.select(
+                        "reply_pool",
+                        select="category,created_at,discovered_at",
+                        limit=10000,
+                    )
+                    if today_replies:
+                        for r in today_replies:
+                            dt = (r.get("created_at") or r.get("discovered_at") or "")
+                            if dt.startswith(today_str):
+                                cat = (r.get("category") or "C").upper()
+                                if cat == "A":
+                                    reply_today_a += 1
+                                elif cat == "B":
+                                    reply_today_b += 1
+                                else:
+                                    reply_today_c += 1
+                except Exception:
+                    pass
             else:
                 # Fallback to supplier_pool legacy data
                 reply_total = db.count("supplier_pool", filters={"status": "Replied"})
@@ -1915,7 +1946,9 @@ def get_stats():
             "reply_b": reply_b,
             "reply_c": reply_c,
             "reply_today": 0,
-            "reply_a_today": 0,
+            "reply_a_today": reply_today_a,
+            "reply_b_today": reply_today_b,
+            "reply_c_today": reply_today_c,
             "quote_total": quote_total,
             "quote_today_new": 0,
             "quote_suppliers": 0,
@@ -2307,9 +2340,10 @@ tr.selected-row td{background:#e8f4fd}
     <button class="btn amber" onclick="toggleImport()">Import domains</button>
   </div>
   <div class="form-row">
-    <label>My Name</label><input id="d-user" placeholder="your name" style="width:100px" onchange="saveUserName()">
+    <label>User</label><input id="d-user" placeholder="your name" style="width:100px" onchange="saveUserName()">
     <label>Count</label><input id="d-count" value="5000" type="number" style="width:80px">
     <label>Status</label><select id="d-status" onchange="loadDomainTable()"><option value="">All</option><option value="New">New</option><option value="Claimed">Claimed</option><option value="Contacted">Contacted</option><option value="Replied">Replied</option></select>
+    <label>User Filter</label><select id="d-user-filter" onchange="loadDomainTable()"><option value="">All Users</option></select>
   </div>
   <!-- Import panel (hidden by default) -->
   <div id="import-panel" style="display:none;margin-bottom:16px;padding:14px;background:var(--card);border:0.5px solid var(--border);border-radius:10px">
@@ -2358,8 +2392,9 @@ tr.selected-row td{background:#e8f4fd}
   <div class="cards" id="email-cards"></div>
   <div class="actions">
     <button class="btn" onclick="exportEmails()">Export send queue</button>
-    <label style="font-size:12px;color:var(--muted)">My Name</label><input id="e-user" placeholder="your name" style="width:100px" onchange="saveUserName()">
+    <label style="font-size:12px;color:var(--muted)">User</label><input id="e-user" placeholder="your name" style="width:100px" onchange="saveUserName()">
     <label style="font-size:12px;color:var(--muted)">Count</label><input id="e-count" value="1000" type="number" style="width:80px">
+    <label style="font-size:12px;color:var(--muted)">User Filter</label><select id="e-user-filter" onchange="loadEmailTable()"><option value="">All Users</option></select>
     <button class="btn green" onclick="toggleEmailImport()">Import emails</button>
   </div>
   <!-- Email Import panel (hidden by default) -->
@@ -2402,7 +2437,8 @@ tr.selected-row td{background:#e8f4fd}
     <button class="btn amber" onclick="loadReplyTable('B')">B class</button>
     <button class="btn purple" onclick="loadReplyTable('C')">C class</button>
     <button class="btn" style="background:var(--muted);color:#fff" onclick="loadReplyTable('D')">D class</button>
-    <label style="font-size:12px;color:var(--muted)">My Name</label><input id="r-user" placeholder="your name" style="width:100px" onchange="saveUserName()">
+    <label style="font-size:12px;color:var(--muted)">User</label><input id="r-user" placeholder="your name" style="width:100px" onchange="saveUserName()">
+    <label style="font-size:12px;color:var(--muted)">User Filter</label><select id="r-user-filter" onchange="loadReplyTable(REPLY_PAGER.category)"><option value="">All Users</option></select>
     <button class="btn green" onclick="toggleReplyImport()">Import replies</button>
   </div>
   <!-- Reply Import panel (hidden by default) -->
@@ -2437,7 +2473,8 @@ tr.selected-row td{background:#e8f4fd}
     <button class="btn" id="quote-export-btn" onclick="exportQuotes()">Export CSV</button>
     <button class="btn red" id="quote-delete-btn" onclick="deleteSelectedQuotes()" style="display:none">Delete Selected (<span id="quote-sel-count">0</span>)</button>
     <a class="btn" href="/api/quote/export" target="_blank">Export All CSV</a>
-    <label style="font-size:12px;color:var(--muted)">My Name</label><input id="q-user" placeholder="your name" style="width:100px" onchange="saveUserName()">
+    <label style="font-size:12px;color:var(--muted)">User</label><input id="q-user" placeholder="your name" style="width:100px" onchange="saveUserName()">
+    <label style="font-size:12px;color:var(--muted)">User Filter</label><select id="q-user-filter" onchange="loadQuoteTable()"><option value="">All Users</option></select>
     <button class="btn green" onclick="importARepliesToQuotes()">Import A-class replies</button>
     <button class="btn" onclick="toggleQuoteImport()">Import from File</button>
     <span id="quote-import-result" style="font-size:12px;color:var(--muted)"></span>
@@ -2682,23 +2719,42 @@ async function loadStats(){
     const s=await fetch(API+'/api/stats').then(r=>r.json());
     document.getElementById('domain-cards').innerHTML=[
       {l:'Unique Domains',v:s.domain_unique_total,c:'blue'},{l:'New',v:s.domain_unique_new,c:'amber'},
-      {l:'Claimed',v:s.domain_unique_claimed,c:'purple'},{l:'Contacted',v:s.domain_unique_contacted,c:'teal'},
-      {l:'Replied',v:s.domain_unique_replied,c:'green'},
+      {l:'Claimed',v:s.domain_unique_claimed,c:'purple'},
     ].map(c=>`<div class="card"><div class="label">${c.l}</div><div class="value ${c.c}">${fmt(c.v)}</div></div>`).join('');
     document.getElementById('email-cards').innerHTML=[
       {l:'Total Emails',v:s.email_total,c:'blue'},{l:'Unsent',v:s.email_unsent,c:'amber'},
-      {l:'Sent',v:s.email_sent,c:'green'},{l:'Bounce',v:s.email_bounce,c:'red'},
+      {l:'Sent',v:s.email_sent,c:'green'},
     ].map(c=>`<div class="card"><div class="label">${c.l}</div><div class="value ${c.c}">${fmt(c.v)}</div></div>`).join('');
     document.getElementById('reply-cards').innerHTML=[
-      {l:'Total',v:s.reply_total,c:'blue'},{l:'Unread',v:s.reply_unread,c:'amber'},
-      {l:'A class',v:s.reply_a,c:'green'},{l:'B class',v:s.reply_b,c:'amber'},
-      {l:'C class',v:s.reply_c,c:'purple'},
+      {l:'累计 Total',v:s.reply_total,c:'blue'},{l:'累计 A',v:s.reply_a,c:'green'},
+      {l:'累计 B',v:s.reply_b,c:'amber'},{l:'累计 C',v:s.reply_c,c:'purple'},
+      {l:'今日新增',v:(s.reply_today_a||0)+(s.reply_today_b||0)+(s.reply_today_c||0),c:'blue'},
+      {l:'今日 A',v:s.reply_today_a||0,c:'green'},{l:'今日 B',v:s.reply_today_b||0,c:'amber'},
+      {l:'今日 C',v:s.reply_today_c||0,c:'purple'},
     ].map(c=>`<div class="card"><div class="label">${c.l}</div><div class="value ${c.c}">${fmt(c.v)}</div></div>`).join('');
     document.getElementById('quote-cards').innerHTML=[
       {l:'Total quotes',v:s.quote_total,c:'blue'},{l:'Today new',v:s.quote_today_new,c:'amber'},
     ].map(c=>`<div class="card"><div class="label">${c.l}</div><div class="value ${c.c}">${fmt(c.v)}</div></div>`).join('');
     document.getElementById('refresh-msg').textContent='Updated: '+new Date().toLocaleTimeString('zh-CN');
+    populateUserFilters(s);
   }catch(e){document.getElementById('refresh-msg').textContent='Error: '+e.message}
+}
+
+// ── Populate user filter dropdowns from stats members data ──
+async function populateUserFilters(stats){
+  try{
+    const r=await fetch(API+'/api/members').then(r=>r.json());
+    const members=(r.members||[]);
+    const ids=['d-user-filter','e-user-filter','r-user-filter','q-user-filter'];
+    ids.forEach(id=>{
+      const sel=document.getElementById(id);
+      if(!sel)return;
+      const current=sel.value;
+      sel.innerHTML='<option value="">All Users</option>'+
+        members.map(m=>`<option value="${esc(m)}">${esc(m)}</option>`).join('');
+      if(current)sel.value=current;
+    });
+  }catch(e){}
 }
 
 // ── Selection state for all pools ──
@@ -2718,9 +2774,10 @@ function _getGlobalIdx(page, pageSize, rowIdx){ return (page-1)*pageSize + rowId
 
 async function loadDomainTable(){
   const status=document.getElementById('d-status').value;
+  const userFilter=document.getElementById('d-user-filter').value;
   const limit=DOMAIN_PAGER.pageSize;
   const offset=(DOMAIN_PAGER.page-1)*limit;
-  const r=await fetch(API+'/api/domain/list?limit='+limit+'&offset='+offset+(status?'&status='+status:'')).then(r=>r.json());
+  const r=await fetch(API+'/api/domain/list?limit='+limit+'&offset='+offset+(status?'&status='+status:'')+(userFilter?'&user='+encodeURIComponent(userFilter):'')).then(r=>r.json());
   const total=r.unique_total||0;
   const maxPage=Math.max(1,Math.ceil(total/limit));
   if(DOMAIN_PAGER.page>maxPage){DOMAIN_PAGER.page=maxPage;}
@@ -2749,9 +2806,10 @@ function onDomainPageSizeChange(){
 
 async function loadEmailTable(){
   const u=getUserName()||'';
+  const userFilter=document.getElementById('e-user-filter').value;
   const limit=EMAIL_PAGER.pageSize;
   const offset=(EMAIL_PAGER.page-1)*limit;
-  const r=await fetch(API+'/api/email/queue?user='+encodeURIComponent(u)+'&count='+limit+'&offset='+offset).then(r=>r.json());
+  const r=await fetch(API+'/api/email/queue?user='+encodeURIComponent(u)+'&count='+limit+'&offset='+offset+(userFilter?'&claimed_by='+encodeURIComponent(userFilter):'')).then(r=>r.json());
   const total=r.total||0;
   const maxPage=Math.max(1,Math.ceil(total/limit));
   if(EMAIL_PAGER.page>maxPage){EMAIL_PAGER.page=maxPage;}
@@ -2783,7 +2841,8 @@ async function loadReplyTable(cat){
   const limit=REPLY_PAGER.pageSize;
   const offset=(REPLY_PAGER.page-1)*limit;
   const category=REPLY_PAGER.category;
-  const r=await fetch(API+'/api/reply/list?limit='+limit+'&offset='+offset+(category?'&category='+category:'')).then(r=>r.json());
+  const userFilter=document.getElementById('r-user-filter').value;
+  const r=await fetch(API+'/api/reply/list?limit='+limit+'&offset='+offset+(category?'&category='+category:'')+(userFilter?'&user='+encodeURIComponent(userFilter):'')).then(r=>r.json());
   const total=r.total||0;
   const maxPage=Math.max(1,Math.ceil(total/limit));
   if(REPLY_PAGER.page>maxPage){REPLY_PAGER.page=maxPage;}
@@ -2823,7 +2882,8 @@ function onReplyPageSizeChange(){
 async function loadQuoteTable(){
   const limit=QUOTE_PAGER.pageSize;
   const offset=(QUOTE_PAGER.page-1)*limit;
-  const r=await fetch(API+'/api/quote/list?limit='+limit+'&offset='+offset).then(r=>r.json());
+  const userFilter=document.getElementById('q-user-filter').value;
+  const r=await fetch(API+'/api/quote/list?limit='+limit+'&offset='+offset+(userFilter?'&supplier='+encodeURIComponent(userFilter):'')).then(r=>r.json());
   const total=r.total||0;
   const maxPage=Math.max(1,Math.ceil(total/limit));
   if(QUOTE_PAGER.page>maxPage){QUOTE_PAGER.page=maxPage;}
