@@ -2359,7 +2359,7 @@ tr.selected-row td{background:#e8f4fd}
     </div>
     <div style="font-size:11px;color:var(--muted);margin-top:4px">Comma-separated usernames. Distribute assigns domains round-robin to these members.</div>
   </div>
-  <table id="domain-table"><tr><th>序号</th><th>Domain</th><th>Source</th><th>Status</th><th>Claimed By</th><th>Priority</th><th>Created</th></tr></table>
+  <table id="domain-table"><tr><th>#</th><th>Domain</th><th>Source</th><th>Status</th><th>Claimed By</th><th>Priority</th><th>Created</th></tr></table>
   <!-- Domain pagination -->
   <div class="log-filter-group" id="domain-pagination" style="justify-content:center;margin-top:8px;display:none">
     <button class="btn" onclick="changeDomainPage(-1)">Prev</button>
@@ -2400,7 +2400,7 @@ tr.selected-row td{background:#e8f4fd}
       <span id="email-import-result" style="font-size:12px;color:var(--muted)"></span>
     </div>
   </div>
-  <table id="email-table"><tr><th>序号</th><th>Email</th><th>Domain</th><th>Send Status</th><th>Claimed By</th><th>Source</th><th>Created</th></tr></table>
+  <table id="email-table"><tr><th>#</th><th>Email</th><th>Domain</th><th>Send Status</th><th>Claimed By</th><th>Source</th><th>Created</th></tr></table>
   <!-- Email pagination -->
   <div class="log-filter-group" id="email-pagination" style="justify-content:center;margin-top:8px;display:none">
     <button class="btn" onclick="changeEmailPage(-1)">Prev</button>
@@ -2438,7 +2438,7 @@ tr.selected-row td{background:#e8f4fd}
     <button class="btn" style="font-size:11px" onclick="downloadReplyTemplate()">Download Template</button>
     <span id="reply-import-result" style="font-size:12px;color:var(--muted)"></span>
   </div>
-  <table id="reply-table"><tr><th><input type="checkbox" class="chk-all" onchange="toggleReplyAll(this)" title="Select All"></th><th>序号</th><th>Email</th><th>Domain</th><th>Category</th><th>Status</th><th>Supplier</th><th>Reply Time</th><th>Content</th></tr></table>
+  <table id="reply-table"><tr><th><input type="checkbox" class="chk-all" onchange="toggleReplyAll(this)" title="Select All"></th><th>#</th><th>Email</th><th>Domain</th><th>Category</th><th>Status</th><th>Supplier</th><th>Reply Time</th><th>Content</th></tr></table>
   <!-- Reply pagination -->
   <div class="log-filter-group" id="reply-pagination" style="justify-content:center;margin-top:8px;display:none">
     <button class="btn" onclick="changeReplyPage(-1)">Prev</button>
@@ -2459,7 +2459,6 @@ tr.selected-row td{background:#e8f4fd}
   <div class="actions">
     <button class="btn" id="quote-export-btn" onclick="exportQuotes()">Export CSV</button>
     <button class="btn red" id="quote-delete-btn" onclick="deleteSelectedQuotes()" style="display:none">Delete Selected (<span id="quote-sel-count">0</span>)</button>
-    <a class="btn" href="/api/quote/export" target="_blank">Export All CSV</a>
     <label style="font-size:12px;color:var(--muted)">User</label><input id="q-user" placeholder="your name" style="width:100px" onchange="saveUserName()">
     <label style="font-size:12px;color:var(--muted)">User Filter</label><select id="q-user-filter" onchange="loadQuoteTable()"><option value="">All Users</option></select>
     <button class="btn green" onclick="importARepliesToQuotes()">Import A-class replies</button>
@@ -2477,8 +2476,8 @@ tr.selected-row td{background:#e8f4fd}
     <span id="quote-import-file-result" style="font-size:12px;color:var(--muted)"></span>
   </div>
   <div style="overflow-x:auto">
-  <table id="quote-table"><tr>
-    <th><input type="checkbox" class="chk-all" onchange="toggleQuoteAll(this)" title="Select All"></th><th>序号</th>
+  <table id="quote-table" style="font-size:11px"><tr>
+    <th><input type="checkbox" class="chk-all" onchange="toggleQuoteAll(this)" title="Select All"></th><th>#</th>
     <th>Link</th><th>Price (USD)</th><th>Backlink Type</th><th>DR</th><th>DA</th>
     <th>Ref. Domains</th><th>Traffic</th><th>Country</th><th>Keywords</th>
     <th>Categories</th><th>Languages</th><th>TAT</th><th>Permanence</th><th>Contact</th>
@@ -2492,9 +2491,9 @@ tr.selected-row td{background:#e8f4fd}
     <button class="btn" onclick="changeQuotePage(1)">Next</button>
     <label style="font-size:12px;color:var(--muted);margin-left:16px">Per page:</label>
     <select id="quote-page-size" onchange="onQuotePageSizeChange()" style="padding:4px 8px;font-size:12px;border:0.5px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text)">
+      <option value="10" selected>10</option>
       <option value="20">20</option>
-      <option value="50" selected>50</option>
-      <option value="100">100</option>
+      <option value="50">50</option>
     </select>
   </div>
 </div>
@@ -2531,7 +2530,7 @@ tr.selected-row td{background:#e8f4fd}
     <button class="btn" onclick="refreshLogs()" style="margin-left:auto">Refresh</button>
   </div>
 
-  <table id="log-table"><tr><th><input type="checkbox" class="chk-all" onchange="toggleLogAll(this)" title="Select All"></th><th>序号</th><th>Time</th><th>User</th><th>Action</th><th>Pool</th><th>Count</th><th>Detail</th></tr></table>
+  <table id="log-table"><tr><th><input type="checkbox" class="chk-all" onchange="toggleLogAll(this)" title="Select All"></th><th>#</th><th>Time</th><th>User</th><th>Action</th><th>Pool</th><th>Count</th><th>Detail</th></tr></table>
 
   <!-- 分页控件 -->
   <div class="log-filter-group" id="log-pagination" style="justify-content:center;margin-top:8px">
@@ -2560,7 +2559,7 @@ function esc(s,n=80){return String(s||'').replace(/</g,'&lt;').slice(0,n)}
 const DOMAIN_PAGER={page:1,pageSize:50};
 const EMAIL_PAGER ={page:1,pageSize:50};
 const REPLY_PAGER ={page:1,pageSize:50,category:''};
-const QUOTE_PAGER ={page:1,pageSize:50};
+const QUOTE_PAGER ={page:1,pageSize:10};
 
 // ── User name via localStorage ──
 function getUserName(){
@@ -2769,7 +2768,7 @@ async function loadDomainTable(){
   const maxPage=Math.max(1,Math.ceil(total/limit));
   if(DOMAIN_PAGER.page>maxPage){DOMAIN_PAGER.page=maxPage;}
   DOMAIN_SEL.clear();
-  document.getElementById('domain-table').innerHTML='<tr><th>序号</th><th>Domain</th><th>Status</th><th>Claimed By</th><th>Priority</th><th>Created</th></tr>'+
+  document.getElementById('domain-table').innerHTML='<tr><th>#</th><th>Domain</th><th>Status</th><th>Claimed By</th><th>Priority</th><th>Created</th></tr>'+
     (r.domains||[]).map((d,i)=>`<tr data-idx="${i}" data-id="${d.domain_id}">
       <td style="color:var(--muted);font-size:11.5px;text-align:center">${_getGlobalIdx(DOMAIN_PAGER.page,limit,i)}</td>
       <td>${esc(d.domain)}</td>
@@ -2801,7 +2800,7 @@ async function loadEmailTable(){
   const maxPage=Math.max(1,Math.ceil(total/limit));
   if(EMAIL_PAGER.page>maxPage){EMAIL_PAGER.page=maxPage;}
   EMAIL_SEL.clear();
-  document.getElementById('email-table').innerHTML='<tr><th>序号</th><th>Email</th><th>Domain</th><th>Send Status</th><th>Claimed By</th><th>Created</th></tr>'+
+  document.getElementById('email-table').innerHTML='<tr><th>#</th><th>Email</th><th>Domain</th><th>Send Status</th><th>Claimed By</th><th>Created</th></tr>'+
     (r.emails||[]).map((e,i)=>`<tr data-idx="${i}" data-id="${e.email_id}">
       <td style="color:var(--muted);font-size:11.5px;text-align:center">${_getGlobalIdx(EMAIL_PAGER.page,limit,i)}</td>
       <td>${esc(e.contact_email)}</td>
@@ -2834,7 +2833,7 @@ async function loadReplyTable(cat){
   const maxPage=Math.max(1,Math.ceil(total/limit));
   if(REPLY_PAGER.page>maxPage){REPLY_PAGER.page=maxPage;}
   REPLY_SEL.clear();
-  document.getElementById('reply-table').innerHTML='<tr><th><input type="checkbox" class="chk-all" onchange="toggleReplyAll(this)" title="Select All"></th><th>序号</th><th>Email</th><th>Domain</th><th>Category</th><th>Status</th><th>Supplier</th><th>Reply Time</th><th>Content</th></tr>'+
+  document.getElementById('reply-table').innerHTML='<tr><th><input type="checkbox" class="chk-all" onchange="toggleReplyAll(this)" title="Select All"></th><th>#</th><th>Email</th><th>Domain</th><th>Category</th><th>Status</th><th>Supplier</th><th>Reply Time</th><th>Content</th></tr>'+
     (r.replies||[]).map((rp,i)=>`<tr data-idx="${i}" data-id="${rp.reply_id}">
       <td><input type="checkbox" class="chk-row" onchange="onReplyCheck(this,${rp.reply_id},${i})"></td>
       <td style="color:var(--muted);font-size:11.5px;text-align:center">${_getGlobalIdx(REPLY_PAGER.page,limit,i)}</td>
@@ -2876,47 +2875,112 @@ async function loadQuoteTable(){
   if(QUOTE_PAGER.page>maxPage){QUOTE_PAGER.page=maxPage;}
   QUOTE_SEL.clear();
   // Map quote_pool fields → Jenny CSV template columns (without 6 Niche Price cols)
-  document.getElementById('quote-table').innerHTML='<tr><th><input type="checkbox" class="chk-all" onchange="toggleQuoteAll(this)" title="Select All"></th><th>序号</th>'+
-    '<th>Link</th><th>Price (USD)</th><th>Backlink Type</th><th>DR</th><th>DA</th>'+
-    '<th>Ref. Domains</th><th>Traffic</th><th>Country</th><th>Keywords</th>'+
-    '<th>Categories</th><th>Languages</th><th>TAT</th><th>Permanence</th><th>Contact</th>'+
-    '<th>Cooperation</th><th>Payment</th><th>Discount</th><th>Link Rules</th><th>Content</th><th>Requirements</th><th>Extra Services</th><th>Supplier</th><th>其他</th></tr>'+
-    (r.quotes||[]).map((q,i)=>{
-      // Build "其他" column: only truly unmapped fields (excludes all standard columns below)
-      const mappedFields=new Set(['domain','price','cooperation_type','traffic','country','site_category','niche','tat','permanence','contact_email','email','supplier','da','dr','ref_domains','keywords','categories','languages','link_rules','content','payment','discount','additional_services','requirements','reply_content','status','notes','discovered_by','discovered_at','quote_id','reply_id','priority','id']);
+  // Dynamic column visibility: only show columns that have data in current page
+  const allQuotes = r.quotes || [];
+  // Check which columns have any non-empty value across all rows
+  const colHasData = {
+    price: false, site_category: false, dr: false, da: false,
+    ref_domains: false, traffic: false, country: false, keywords: false,
+    categories: false, languages: false, tat: false, permanence: false,
+    contact_email: false, cooperation_type: false, payment: false,
+    discount: false, link_rules: false, content: false, requirements: false,
+    additional_services: false, supplier: false, other: false
+  };
+  for (const q of allQuotes) {
+    if (!colHasData.price && q.price) colHasData.price = true;
+    if (!colHasData.site_category && (q.site_category||q.niche)) colHasData.site_category = true;
+    if (!colHasData.dr && q.dr) colHasData.dr = true;
+    if (!colHasData.da && q.da) colHasData.da = true;
+    if (!colHasData.ref_domains && q.ref_domains) colHasData.ref_domains = true;
+    if (!colHasData.traffic && q.traffic) colHasData.traffic = true;
+    if (!colHasData.country && q.country) colHasData.country = true;
+    if (!colHasData.keywords && q.keywords) colHasData.keywords = true;
+    if (!colHasData.categories && q.categories) colHasData.categories = true;
+    if (!colHasData.languages && q.languages) colHasData.languages = true;
+    if (!colHasData.tat && q.tat) colHasData.tat = true;
+    if (!colHasData.permanence && q.permanence) colHasData.permanence = true;
+    if (!colHasData.contact_email && (q.contact_email||q.email)) colHasData.contact_email = true;
+    if (!colHasData.cooperation_type && q.cooperation_type) colHasData.cooperation_type = true;
+    if (!colHasData.payment && q.payment) colHasData.payment = true;
+    if (!colHasData.discount && q.discount) colHasData.discount = true;
+    if (!colHasData.link_rules && q.link_rules) colHasData.link_rules = true;
+    if (!colHasData.content && q.content) colHasData.content = true;
+    if (!colHasData.requirements && q.requirements) colHasData.requirements = true;
+    if (!colHasData.additional_services && q.additional_services) colHasData.additional_services = true;
+    if (!colHasData.supplier && q.supplier) colHasData.supplier = true;
+  }
+
+  function _qc(show, label, valFn, extraStyle='') {
+    return show ? `<th>${label}</th>` : '';
+  }
+  function _qd(show, val, extraStyle='') {
+    return show ? `<td${extraStyle}>${val}</td>` : '';
+  }
+
+  let th='<tr><th><input type="checkbox" class="chk-all" onchange="toggleQuoteAll(this)" title="Select All"></th><th>#</th>'+
+    '<th>Link</th>'+
+    _qc(colHasData.price,'Price (USD)')+
+    _qc(colHasData.site_category,'Backlink Type')+
+    _qc(colHasData.dr,'DR')+
+    _qc(colHasData.da,'DA')+
+    _qc(colHasData.ref_domains,'Ref. Domains')+
+    _qc(colHasData.traffic,'Traffic')+
+    _qc(colHasData.country,'Country')+
+    _qc(colHasData.keywords,'Keywords')+
+    _qc(colHasData.categories,'Categories')+
+    _qc(colHasData.languages,'Languages')+
+    _qc(colHasData.tat,'TAT')+
+    _qc(colHasData.permanence,'Permanence')+
+    _qc(colHasData.contact_email,'Contact')+
+    _qc(colHasData.cooperation_type,'Cooperation')+
+    _qc(colHasData.payment,'Payment')+
+    _qc(colHasData.discount,'Discount')+
+    _qc(colHasData.link_rules,'Link Rules')+
+    _qc(colHasData.content,'Content')+
+    _qc(colHasData.requirements,'Requirements')+
+    _qc(colHasData.additional_services,'Extra Services')+
+    _qc(colHasData.supplier,'Supplier')+
+    '</tr>';
+
+  const mappedFields=new Set(['domain','price','cooperation_type','traffic','country','site_category','niche','tat','permanence','contact_email','email','supplier','da','dr','ref_domains','keywords','categories','languages','link_rules','content','payment','discount','additional_services','requirements','reply_content','status','notes','discovered_by','discovered_at','quote_id','reply_id','priority','id']);
+
+  let tb=(allQuotes).map((q,i)=>{
       const otherParts=[];
       for(const [k,v] of Object.entries(q)){
         if(!mappedFields.has(k.toLowerCase()) && v!=null && String(v).trim()) otherParts.push(k+': '+v);
       }
       const otherStr=otherParts.join(' | ');
+      colHasData.other = colHasData.other || !!otherStr;
+
       return `<tr data-idx="${i}" data-id="${q.quote_id||q.id}">
         <td><input type="checkbox" class="chk-row" onchange="onQuoteCheck(this,${q.quote_id||q.id},${i})"></td>
-        <td style="color:var(--muted);font-size:11.5px;text-align:center">${_getGlobalIdx(QUOTE_PAGER.page,limit,i)}</td>
-        <td><a href="http://${esc(q.domain)}" target="_blank">${esc(q.domain)}</a></td>
-        <td style="white-space:nowrap">${esc(q.price,'')}</td>
-        <td>${esc(q.site_category||q.niche||'','')}</td>
-        <td>${esc(q.dr||q.traffic||'','')}</td>
-        <td>${esc(q.da||'','')}</td>
-        <td>${esc(q.ref_domains||'','')}</td>
-        <td>${esc(q.traffic||'','')}</td>
-        <td>${esc(q.country||'','')}</td>
-        <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis" title="${esc(q.niche||q.site_category||'',200)}">${esc(q.niche||q.site_category||'','')}</td>
-        <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis">${esc(q.site_category||q.niche||'','')}</td>
-        <td>${esc(q.languages||'','')}</td>
-        <td>${esc(q.tat||'','')}</td>
-        <td>${esc(q.permanence||'','')}</td>
-        <td>${esc(q.contact_email||q.email||'','')}</td>
-        <td>${esc(q.cooperation_type||'','')}</td>
-        <td>${esc(q.payment||'','')}</td>
-        <td>${esc(q.discount||'','')}</td>
-        <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis" title="${esc(q.link_rules||'',300)}">${esc(q.link_rules||'','')}</td>
-        <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis" title="${esc(q.content||'',300)}">${esc(q.content||'','')}</td>
-        <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis" title="${esc(q.requirements||'',300)}">${esc(q.requirements||'','')}</td>
-        <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis" title="${esc(q.additional_services||'',300)}">${esc(q.additional_services||'','')}</td>
-        <td>${esc(q.supplier||'','')}</td>
-        <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;font-size:11px;color:var(--muted)" title="${esc(otherStr,500)}">${esc(otherStr,80)}</td>
-      </tr>`;
+        <td style="color:var(--muted);font-size:10.5px;text-align:center">${_getGlobalIdx(QUOTE_PAGER.page,limit,i)}</td>
+        <td><a href="http://${esc(q.domain)}" target="_blank">${esc(q.domain)}</a></td>`+
+        _qd(colHasData.price, esc(q.price,''))+
+        _qd(colHasData.site_category, esc(q.site_category||q.niche||'',''))+
+        _qd(colHasData.dr, esc(q.dr||'',''))+
+        _qd(colHasData.da, esc(q.da||'',''))+
+        _qd(colHasData.ref_domains, esc(q.ref_domains||'',''))+
+        _qd(colHasData.traffic, esc(q.traffic||'',''))+
+        _qd(colHasData.country, esc(q.country||'',''))+
+        _qd(colHasData.keywords, esc(q.keywords||'',''), ' style="max-width:100px;overflow:hidden;text-overflow:ellipsis" title="'+esc(q.keywords||'',200)+'"')+
+        _qd(colHasData.categories, esc(q.categories||'',''), ' style="max-width:100px;overflow:hidden;text-overflow:ellipsis"')+
+        _qd(colHasData.languages, esc(q.languages||'',''))+
+        _qd(colHasData.tat, esc(q.tat||'',''))+
+        _qd(colHasData.permanence, esc(q.permanence||'',''))+
+        _qd(colHasData.contact_email, esc(q.contact_email||q.email||'',''))+
+        _qd(colHasData.cooperation_type, esc(q.cooperation_type||'',''))+
+        _qd(colHasData.payment, esc(q.payment||'',''))+
+        _qd(colHasData.discount, esc(q.discount||'',''))+
+        _qd(colHasData.link_rules, esc(q.link_rules||'',''), ' style="max-width:120px;overflow:hidden;text-overflow:ellipsis" title="'+esc(q.link_rules||'',300)+'"')+
+        _qd(colHasData.content, esc(q.content||'',''), ' style="max-width:120px;overflow:hidden;text-overflow:ellipsis" title="'+esc(q.content||'',300)+'"')+
+        _qd(colHasData.requirements, esc(q.requirements||'',''), ' style="max-width:120px;overflow:hidden;text-overflow:ellipsis" title="'+esc(q.requirements||'',300)+'"')+
+        _qd(colHasData.additional_services, esc(q.additional_services||'',''), ' style="max-width:120px;overflow:hidden;text-overflow:ellipsis" title="'+esc(q.additional_services||'',300)+'"')+
+        _qd(colHasData.supplier, esc(q.supplier||'',''))+
+      `</tr>`;
     }).join('');
+
+  document.getElementById('quote-table').innerHTML=th+tb;
   _updateSelCount('QUOTE_SEL','quote-sel-count','quote-delete-btn');
   document.getElementById('quote-delete-btn').style.display=QUOTE_SEL.size?'inline-block':'none';
   document.getElementById('quote-page-info').textContent='Page '+QUOTE_PAGER.page+' / '+maxPage+' ('+total+' records)';
@@ -3145,7 +3209,7 @@ function renderLogPage() {
   // Render table
   const table = document.getElementById('log-table');
   const startIdx = start;
-  table.innerHTML = '<tr><th><input type="checkbox" class="chk-all" onchange="toggleLogAll(this)" title="Select All"></th><th>序号</th><th>Time</th><th>User</th><th>Action</th><th>Pool</th><th>Count</th><th>Detail</th></tr>' +
+  table.innerHTML = '<tr><th><input type="checkbox" class="chk-all" onchange="toggleLogAll(this)" title="Select All"></th><th>#</th><th>Time</th><th>User</th><th>Action</th><th>Pool</th><th>Count</th><th>Detail</th></tr>' +
     pageLogs.map((l, i) => `<tr data-id="${esc(l.log_id)}">
       <td><input type="checkbox" class="chk-row" onchange="onLogCheck(this,'${esc(l.log_id)}')"></td>
       <td style="color:var(--muted);font-size:11.5px;text-align:center">${startIdx + i + 1}</td>
