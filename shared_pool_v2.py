@@ -2771,7 +2771,7 @@ async function loadDomainTable(){
   const limit=DOMAIN_PAGER.pageSize;
   const offset=(DOMAIN_PAGER.page-1)*limit;
   const r=await fetch(API+'/api/domain/list?limit='+limit+'&offset='+offset+(status?'&status='+status:'')+(userFilter?'&user='+encodeURIComponent(userFilter):'')).then(r=>r.json());
-  const total=r.unique_total||0;
+  const total=r.total||r.unique_total||0;
   const maxPage=Math.max(1,Math.ceil(total/limit));
   if(DOMAIN_PAGER.page>maxPage){DOMAIN_PAGER.page=maxPage;}
   DOMAIN_SEL.clear();
