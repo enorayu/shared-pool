@@ -2758,8 +2758,8 @@ const QUOTE_SEL = new Set();
 const LOG_SEL = new Set();
 
 // ── Selection helpers ──
-function _updateSelCount(pool, countId, btnId){
-  const c=window[pool].size;
+function _updateSelCount(selSet, countId, btnId){
+  const c=selSet.size;
   document.getElementById(countId).textContent=c;
   document.getElementById(btnId).disabled=c===0;
 }
@@ -2785,7 +2785,9 @@ async function loadDomainTable(){
       <td>${(d.created_at||'').slice(0,16)}</td>
     </tr>`).join('');
   document.getElementById('domain-page-info').textContent='Page '+DOMAIN_PAGER.page+' / '+maxPage+' ('+total+' records)';
-  document.getElementById('domain-pagination').style.display=total>limit?'flex':'none';
+  const dp=document.getElementById('domain-pagination');
+  if(dp)dp.style.display=total>limit?'flex':'none';
+  console.log('[Domain] total='+total+' limit='+limit+' showPagination='+(total>limit));
 }
 function changeDomainPage(delta){
   DOMAIN_PAGER.page=Math.max(1,DOMAIN_PAGER.page+delta);
@@ -2929,17 +2931,19 @@ async function loadQuoteTable(){
     }).join('');
 
   document.getElementById('quote-table').innerHTML=th+tb;
-  _updateSelCount('QUOTE_SEL','quote-sel-count','quote-delete-btn');
+  _updateSelCount(QUOTE_SEL,'quote-sel-count','quote-delete-btn');
   document.getElementById('quote-delete-btn').style.display=QUOTE_SEL.size?'inline-block':'none';
   document.getElementById('quote-page-info').textContent='Page '+QUOTE_PAGER.page+' / '+maxPage+' ('+total+' records)';
-  document.getElementById('quote-pagination').style.display=total>limit?'flex':'none';
+  const qp=document.getElementById('quote-pagination');
+  if(qp)qp.style.display=total>limit?'flex':'none';
+  console.log('[Quote] total='+total+' limit='+limit+' showPagination='+(total>limit));
 }
 function toggleQuoteAll(chk){
   document.querySelectorAll('#quote-table .chk-row').forEach(c=>{c.checked=chk.checked;c.onchange();});
 }
 function onQuoteCheck(chk,id,idx){
   if(chk.checked) QUOTE_SEL.add({id,idx,row:chk.closest('tr')}); else QUOTE_SEL.forEach((v,i)=>{if(v.id===id)QUOTE_SEL.delete(v);});
-  _updateSelCount('QUOTE_SEL','quote-sel-count','quote-delete-btn');
+  _updateSelCount(QUOTE_SEL,'quote-sel-count','quote-delete-btn');
   document.getElementById('quote-delete-btn').style.display=QUOTE_SEL.size?'inline-block':'none';
   chk.closest('tr').classList.toggle('selected-row',chk.checked);
 }
