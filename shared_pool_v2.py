@@ -2367,9 +2367,9 @@ tr.selected-row td{background:#e8f4fd}
     <button class="btn" onclick="changeDomainPage(1)">Next</button>
     <label style="font-size:12px;color:var(--muted);margin-left:16px">Per page:</label>
     <select id="domain-page-size" onchange="onDomainPageSizeChange()" style="padding:4px 8px;font-size:12px;border:0.5px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text)">
+      <option value="10" selected>10</option>
       <option value="20">20</option>
-      <option value="50" selected>50</option>
-      <option value="100">100</option>
+      <option value="50">50</option>
     </select>
   </div>
 </div>
@@ -2408,9 +2408,9 @@ tr.selected-row td{background:#e8f4fd}
     <button class="btn" onclick="changeEmailPage(1)">Next</button>
     <label style="font-size:12px;color:var(--muted);margin-left:16px">Per page:</label>
     <select id="email-page-size" onchange="onEmailPageSizeChange()" style="padding:4px 8px;font-size:12px;border:0.5px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text)">
+      <option value="10" selected>10</option>
       <option value="20">20</option>
-      <option value="50" selected>50</option>
-      <option value="100">100</option>
+      <option value="50">50</option>
     </select>
   </div>
 </div>
@@ -2446,9 +2446,9 @@ tr.selected-row td{background:#e8f4fd}
     <button class="btn" onclick="changeReplyPage(1)">Next</button>
     <label style="font-size:12px;color:var(--muted);margin-left:16px">Per page:</label>
     <select id="reply-page-size" onchange="onReplyPageSizeChange()" style="padding:4px 8px;font-size:12px;border:0.5px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text)">
+      <option value="10" selected>10</option>
       <option value="20">20</option>
-      <option value="50" selected>50</option>
-      <option value="100">100</option>
+      <option value="50">50</option>
     </select>
   </div>
 </div>
@@ -2539,10 +2539,9 @@ tr.selected-row td{background:#e8f4fd}
     <button class="btn" onclick="changeLogPage(1)" id="log-next">Next</button>
     <label style="font-size:12px;color:var(--muted);margin-left:16px">Per page:</label>
     <select id="log-page-size" onchange="onLogPageSizeChange()" style="padding:4px 8px;font-size:12px;border:0.5px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text)">
-      <option value="10">10</option>
-      <option value="20" selected>20</option>
+      <option value="10" selected>10</option>
+      <option value="20">20</option>
       <option value="50">50</option>
-      <option value="100">100</option>
     </select>
   </div>
 
@@ -2556,9 +2555,9 @@ function fmt(n){return n!=null?Number(n).toLocaleString():'0'}
 function esc(s,n=80){return String(s||'').replace(/</g,'&lt;').slice(0,n)}
 
 // ── Pagination state for all pools ──
-const DOMAIN_PAGER={page:1,pageSize:50};
-const EMAIL_PAGER ={page:1,pageSize:50};
-const REPLY_PAGER ={page:1,pageSize:50,category:''};
+const DOMAIN_PAGER={page:1,pageSize:10};
+const EMAIL_PAGER ={page:1,pageSize:10};
+const REPLY_PAGER ={page:1,pageSize:10,category:''};
 const QUOTE_PAGER ={page:1,pageSize:10};
 
 // ── User name via localStorage ──
@@ -2874,73 +2873,15 @@ async function loadQuoteTable(){
   const maxPage=Math.max(1,Math.ceil(total/limit));
   if(QUOTE_PAGER.page>maxPage){QUOTE_PAGER.page=maxPage;}
   QUOTE_SEL.clear();
-  // Map quote_pool fields → Jenny CSV template columns (without 6 Niche Price cols)
-  // Dynamic column visibility: only show columns that have data in current page
+  // Quote Pool: fixed columns (Jenny template), always show all, empty if no data
   const allQuotes = r.quotes || [];
-  // Check which columns have any non-empty value across all rows
-  const colHasData = {
-    price: false, site_category: false, dr: false, da: false,
-    ref_domains: false, traffic: false, country: false, keywords: false,
-    categories: false, languages: false, tat: false, permanence: false,
-    contact_email: false, cooperation_type: false, payment: false,
-    discount: false, link_rules: false, content: false, requirements: false,
-    additional_services: false, supplier: false, other: false
-  };
-  for (const q of allQuotes) {
-    if (!colHasData.price && q.price) colHasData.price = true;
-    if (!colHasData.site_category && (q.site_category||q.niche)) colHasData.site_category = true;
-    if (!colHasData.dr && q.dr) colHasData.dr = true;
-    if (!colHasData.da && q.da) colHasData.da = true;
-    if (!colHasData.ref_domains && q.ref_domains) colHasData.ref_domains = true;
-    if (!colHasData.traffic && q.traffic) colHasData.traffic = true;
-    if (!colHasData.country && q.country) colHasData.country = true;
-    if (!colHasData.keywords && q.keywords) colHasData.keywords = true;
-    if (!colHasData.categories && q.categories) colHasData.categories = true;
-    if (!colHasData.languages && q.languages) colHasData.languages = true;
-    if (!colHasData.tat && q.tat) colHasData.tat = true;
-    if (!colHasData.permanence && q.permanence) colHasData.permanence = true;
-    if (!colHasData.contact_email && (q.contact_email||q.email)) colHasData.contact_email = true;
-    if (!colHasData.cooperation_type && q.cooperation_type) colHasData.cooperation_type = true;
-    if (!colHasData.payment && q.payment) colHasData.payment = true;
-    if (!colHasData.discount && q.discount) colHasData.discount = true;
-    if (!colHasData.link_rules && q.link_rules) colHasData.link_rules = true;
-    if (!colHasData.content && q.content) colHasData.content = true;
-    if (!colHasData.requirements && q.requirements) colHasData.requirements = true;
-    if (!colHasData.additional_services && q.additional_services) colHasData.additional_services = true;
-    if (!colHasData.supplier && q.supplier) colHasData.supplier = true;
-  }
 
-  function _qc(show, label, valFn, extraStyle='') {
-    return show ? `<th>${label}</th>` : '';
-  }
-  function _qd(show, val, extraStyle='') {
-    return show ? `<td${extraStyle}>${val}</td>` : '';
-  }
-
+  // Fixed header — all 22 data columns always visible
   let th='<tr><th><input type="checkbox" class="chk-all" onchange="toggleQuoteAll(this)" title="Select All"></th><th>#</th>'+
-    '<th>Link</th>'+
-    _qc(colHasData.price,'Price (USD)')+
-    _qc(colHasData.site_category,'Backlink Type')+
-    _qc(colHasData.dr,'DR')+
-    _qc(colHasData.da,'DA')+
-    _qc(colHasData.ref_domains,'Ref. Domains')+
-    _qc(colHasData.traffic,'Traffic')+
-    _qc(colHasData.country,'Country')+
-    _qc(colHasData.keywords,'Keywords')+
-    _qc(colHasData.categories,'Categories')+
-    _qc(colHasData.languages,'Languages')+
-    _qc(colHasData.tat,'TAT')+
-    _qc(colHasData.permanence,'Permanence')+
-    _qc(colHasData.contact_email,'Contact')+
-    _qc(colHasData.cooperation_type,'Cooperation')+
-    _qc(colHasData.payment,'Payment')+
-    _qc(colHasData.discount,'Discount')+
-    _qc(colHasData.link_rules,'Link Rules')+
-    _qc(colHasData.content,'Content')+
-    _qc(colHasData.requirements,'Requirements')+
-    _qc(colHasData.additional_services,'Extra Services')+
-    _qc(colHasData.supplier,'Supplier')+
-    '</tr>';
+    '<th>Link</th><th>Price (USD)</th><th>Backlink Type</th><th>DR</th><th>DA</th>'+
+    '<th>Ref. Domains</th><th>Traffic</th><th>Country</th><th>Keywords</th>'+
+    '<th>Categories</th><th>Languages</th><th>TAT</th><th>Permanence</th><th>Contact</th>'+
+    '<th>Cooperation</th><th>Payment</th><th>Discount</th><th>Link Rules</th><th>Content</th><th>Requirements</th><th>Extra Services</th><th>Supplier</th></tr>';
 
   const mappedFields=new Set(['domain','price','cooperation_type','traffic','country','site_category','niche','tat','permanence','contact_email','email','supplier','da','dr','ref_domains','keywords','categories','languages','link_rules','content','payment','discount','additional_services','requirements','reply_content','status','notes','discovered_by','discovered_at','quote_id','reply_id','priority','id']);
 
@@ -2950,34 +2891,33 @@ async function loadQuoteTable(){
         if(!mappedFields.has(k.toLowerCase()) && v!=null && String(v).trim()) otherParts.push(k+': '+v);
       }
       const otherStr=otherParts.join(' | ');
-      colHasData.other = colHasData.other || !!otherStr;
 
       return `<tr data-idx="${i}" data-id="${q.quote_id||q.id}">
         <td><input type="checkbox" class="chk-row" onchange="onQuoteCheck(this,${q.quote_id||q.id},${i})"></td>
         <td style="color:var(--muted);font-size:10.5px;text-align:center">${_getGlobalIdx(QUOTE_PAGER.page,limit,i)}</td>
-        <td><a href="http://${esc(q.domain)}" target="_blank">${esc(q.domain)}</a></td>`+
-        _qd(colHasData.price, esc(q.price,''))+
-        _qd(colHasData.site_category, esc(q.site_category||q.niche||'',''))+
-        _qd(colHasData.dr, esc(q.dr||'',''))+
-        _qd(colHasData.da, esc(q.da||'',''))+
-        _qd(colHasData.ref_domains, esc(q.ref_domains||'',''))+
-        _qd(colHasData.traffic, esc(q.traffic||'',''))+
-        _qd(colHasData.country, esc(q.country||'',''))+
-        _qd(colHasData.keywords, esc(q.keywords||'',''), ' style="max-width:100px;overflow:hidden;text-overflow:ellipsis" title="'+esc(q.keywords||'',200)+'"')+
-        _qd(colHasData.categories, esc(q.categories||'',''), ' style="max-width:100px;overflow:hidden;text-overflow:ellipsis"')+
-        _qd(colHasData.languages, esc(q.languages||'',''))+
-        _qd(colHasData.tat, esc(q.tat||'',''))+
-        _qd(colHasData.permanence, esc(q.permanence||'',''))+
-        _qd(colHasData.contact_email, esc(q.contact_email||q.email||'',''))+
-        _qd(colHasData.cooperation_type, esc(q.cooperation_type||'',''))+
-        _qd(colHasData.payment, esc(q.payment||'',''))+
-        _qd(colHasData.discount, esc(q.discount||'',''))+
-        _qd(colHasData.link_rules, esc(q.link_rules||'',''), ' style="max-width:120px;overflow:hidden;text-overflow:ellipsis" title="'+esc(q.link_rules||'',300)+'"')+
-        _qd(colHasData.content, esc(q.content||'',''), ' style="max-width:120px;overflow:hidden;text-overflow:ellipsis" title="'+esc(q.content||'',300)+'"')+
-        _qd(colHasData.requirements, esc(q.requirements||'',''), ' style="max-width:120px;overflow:hidden;text-overflow:ellipsis" title="'+esc(q.requirements||'',300)+'"')+
-        _qd(colHasData.additional_services, esc(q.additional_services||'',''), ' style="max-width:120px;overflow:hidden;text-overflow:ellipsis" title="'+esc(q.additional_services||'',300)+'"')+
-        _qd(colHasData.supplier, esc(q.supplier||'',''))+
-      `</tr>`;
+        <td><a href="http://${esc(q.domain)}" target="_blank">${esc(q.domain)}</a></td>
+        <td style="white-space:nowrap">${esc(q.price,'')}</td>
+        <td>${esc(q.site_category||q.niche||'','')}</td>
+        <td>${esc(q.dr||'','')}</td>
+        <td>${esc(q.da||'','')}</td>
+        <td>${esc(q.ref_domains||'','')}</td>
+        <td>${esc(q.traffic||'','')}</td>
+        <td>${esc(q.country||'','')}</td>
+        <td style="max-width:100px;overflow:hidden;text-overflow:ellipsis" title="${esc(q.keywords||'',200)}">${esc(q.keywords||'','')}</td>
+        <td style="max-width:100px;overflow:hidden;text-overflow:ellipsis">${esc(q.categories||'','')}</td>
+        <td>${esc(q.languages||'','')}</td>
+        <td>${esc(q.tat||'','')}</td>
+        <td>${esc(q.permanence||'','')}</td>
+        <td>${esc(q.contact_email||q.email||'','')}</td>
+        <td>${esc(q.cooperation_type||'','')}</td>
+        <td>${esc(q.payment||'','')}</td>
+        <td>${esc(q.discount||'','')}</td>
+        <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis" title="${esc(q.link_rules||'',300)}">${esc(q.link_rules||'','')}</td>
+        <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis" title="${esc(q.content||'',300)}">${esc(q.content||'','')}</td>
+        <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis" title="${esc(q.requirements||'',300)}">${esc(q.requirements||'','')}</td>
+        <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis" title="${esc(q.additional_services||'',300)}">${esc(q.additional_services||'','')}</td>
+        <td>${esc(q.supplier||'','')}</td>
+      </tr>`;
     }).join('');
 
   document.getElementById('quote-table').innerHTML=th+tb;
