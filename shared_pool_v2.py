@@ -507,8 +507,13 @@ def domain_list():
 
     total_filters = {k: v for k, v in {"collection_status": status, "claimed_by": user}.items() if v}
     unique_total = _count_unique_domains(status if status else None)
+    # If dict (all-status count), sum for pagination; if int, use directly
+    if isinstance(unique_total, dict):
+        total_for_page = sum(unique_total.values())
+    else:
+        total_for_page = unique_total
 
-    return jsonify({"domains": domains, "unique_total": unique_total})
+    return jsonify({"domains": domains, "unique_total": unique_total, "total": total_for_page})
 
 
 @app.route("/api/domain/export", methods=["POST"])
@@ -2252,6 +2257,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <title>Shared Pool v2 — Supplier Intelligence</title>
 <style>
 :root{--bg:#f8f9fa;--card:#fff;--border:#e0e0e0;--text:#1a1a2e;--muted:#6b7280;--blue:#378add;--green:#1d9e75;--amber:#ba7517;--coral:#d85a30;--purple:#7f77dd;--teal:#0f6e56;}
@@ -2476,13 +2482,15 @@ tr.selected-row td{background:#e8f4fd}
     <span id="quote-import-file-result" style="font-size:12px;color:var(--muted)"></span>
   </div>
   <div style="overflow-x:auto">
-  <table id="quote-table" style="font-size:11px"><tr>
-    <th><input type="checkbox" class="chk-all" onchange="toggleQuoteAll(this)" title="Select All"></th><th>#</th>
-    <th>Link</th><th>Price (USD)</th><th>Backlink Type</th><th>DR</th><th>DA</th>
-    <th>Ref. Domains</th><th>Traffic</th><th>Country</th><th>Keywords</th>
-    <th>Categories</th><th>Languages</th><th>TAT</th><th>Permanence</th><th>Contact</th>
-    <th>Cooperation</th><th>Payment</th><th>Discount</th><th>Link Rules</th><th>Content</th><th>Requirements</th><th>Extra Services</th><th>Supplier</th><th>其他</th>
-  </tr></table>
+  <table id="quote-table" style="font-size:11px;border-collapse:collapse;width:100%">
+    <thead><tr>
+      <th><input type="checkbox" class="chk-all" onchange="toggleQuoteAll(this)" title="Select All"></th><th>#</th>
+      <th>Link</th><th>Price (USD)</th><th>Backlink Type</th><th>DR</th><th>DA</th>
+      <th>Ref. Domains</th><th>Traffic</th><th>Country</th><th>Keywords</th>
+      <th>Categories</th><th>Languages</th><th>TAT</th><th>Permanence</th><th>Contact</th>
+      <th>Cooperation</th><th>Payment</th><th>Discount</th><th>Link Rules</th><th>Content</th><th>Requirements</th><th>Extra Services</th><th>Supplier</th>
+    </tr></thead><tbody></tbody>
+  </table>
   </div>
   <!-- Quote pagination -->
   <div class="log-filter-group" id="quote-pagination" style="justify-content:center;margin-top:8px;display:none">
