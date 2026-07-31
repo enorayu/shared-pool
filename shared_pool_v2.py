@@ -513,7 +513,7 @@ def domain_list():
     else:
         total_for_page = unique_total
 
-    return jsonify({"domains": domains, "unique_total": unique_total, "total": total_for_page})
+    return jsonify({"domains": domains, "unique_total": unique_total, "total": total_for_page, "returned": len(domains)})
 
 
 @app.route("/api/domain/export", methods=["POST"])
