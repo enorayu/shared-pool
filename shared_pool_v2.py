@@ -1427,11 +1427,10 @@ def quote_export():
     # Jenny CSV columns (excluding Casino/Finance/Erotic/Dating/CBD/Crypto/Medicine Niche Price)
     # + 8 standard fields as separate columns (cooperation_type/payment/discount/link_rules/
     #   content/requirements/additional_services/supplier)
-    headers = ["#", "Link", "Price (USD)", "Backlink Type", "DR", "DA",
+    headers = ["#", "Link", "Price", "Backlink Type", "DR", "DA",
                "Ref. Domains", "Traffic", "Country", "Keywords",
                "Categories", "Languages", "TAT", "Permanence", "Contact",
-               "Cooperation", "Payment", "Discount", "Link Rules", "Content",
-               "Requirements", "Extra Services", "Supplier", "其他"]
+               "Cooperation", "Payment", "Discount", "Link Rules", "Status", "其他"]
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(headers)
@@ -1513,6 +1512,63 @@ def quote_delete():
         return jsonify({"deleted": len(ids), "ids": ids})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+def _parse_price_from_content(text: str):
+    """
+    从回复正文解析报价金额 (高置信优先, 避免误抓年份/随机数字)。
+    返回 (price_str, currency) 或 (None, None)。
+    支持: $50 / 50 USD / €40 / 212,00 euros / 50$/ 50 per post / $50-$100
+    仅当金额明确带货币符号/代码, 或紧邻 price/cost/rate 等关键词时才认;
+    年份(19xx/20xx)、孤立数字一律忽略, 防止把 2026 当成价格。
+    """
+    if not text:
+        return None, None
+    import re
+    low = text.lower()
+    cur_map = {"$": "USD", "€": "EUR", "£": "GBP", "₹": "INR", "¥": "CNY"}
+
+    def _clean_num(s):
+        s = s.replace(",", "")
+        # 过滤掉年份 (19xx / 20xx) 和超大数
+        try:
+            v = float(s)
+        except ValueError:
+            return None
+        if 1900 <= v <= 2099:
+            return None
+        if v > 100000:
+            return None
+        return s
+
+    # 1) 带货币符号的金额
+    m = re.search(r"([$€£₹¥])\s?\d[\d,]*\.?\d*", text)
+    if m:
+        sym = m.group(1)
+        num = _clean_num(re.sub(r"[^\d.,]", "", m.group(0)))
+        if num:
+            return num, cur_map.get(sym, "USD")
+
+    # 2) "数字 + 货币代码/词"
+    m = re.search(r"\b(\d[\d,]*\.?\d*)\s*(usd|eur|gbp|inr|cny|euros?|dollars?|bucks|rs)\b", low)
+    if m:
+        num = _clean_num(m.group(1))
+        if num:
+            word = m.group(2)
+            cur = {"usd": "USD", "dollars": "USD", "bucks": "USD",
+                   "eur": "EUR", "euro": "EUR", "euros": "EUR",
+                   "gbp": "GBP", "inr": "INR", "rs": "INR",
+                   "cny": "CNY"}.get(word, "USD")
+            return num, cur
+
+    # 3) 紧邻价格关键词的明确数字 (排除年份/超大)
+    m = re.search(r"(?:price|cost|rate|fee|charged?|per post|per link|pricing)\D{0,15}?(\d[\d,]*\.?\d*)", low)
+    if m:
+        num = _clean_num(m.group(1))
+        if num:
+            return num, "USD"
+
+    return None, None
 
 
 @app.route("/api/quote/import-a-replies", methods=["POST"])
@@ -1599,6 +1655,19 @@ def quote_import_a_replies():
             continue
         existing_emails.add(email)
 
+        # 价格优先从 reply_pool.notes 里的 v2_price:$XX 标签取 (来自原始回信 Excel, 避免丢价)
+        # 其次从回复正文解析 (修复: 进 quote pool 的 A类应有价格)
+        price_str = ""
+        notes_text = reply.get("notes") or ""
+        m_v2 = _re.search(r"v2_price:\s*\$?\s*(\d[\d,]*\.?\d*)\s*(USD|EUR|GBP|INR|CNY)?", notes_text)
+        if m_v2:
+            pv = m_v2.group(1)
+            pc = m_v2.group(2) or "USD"
+            price_str = f"{pv} {pc}".strip()
+        else:
+            pval, pcur = _parse_price_from_content(reply.get("reply_content", ""))
+            price_str = f"{pval} {pcur}".strip() if pval else ""
+
         batch.append({
             "email": email,
             "domain": (reply.get("domain") or email.split("@")[-1]).lower(),
@@ -1609,7 +1678,7 @@ def quote_import_a_replies():
             "traffic": "",
             "site_category": "",
             "cooperation_type": "",
-            "price": "",
+            "price": price_str,
             "link_rules": "",
             "permanence": "",
             "content": "",
@@ -1620,7 +1689,7 @@ def quote_import_a_replies():
             "requirements": "",
             "reply_id": reply.get("reply_id"),
             "reply_content": (reply.get("reply_content") or "")[:8000],
-            "status": "New",
+            "status": "Price TBD" if not price_str else "New",
             "priority": 0,
             "notes": f"Imported from A-class reply by {user}",
             "discovered_by": user,
@@ -2596,6 +2665,7 @@ tr.selected-row td{background:#e8f4fd}
 <!-- Quote Pool -->
 <div class="page" id="page-quote">
   <div class="cards" id="quote-cards"></div>
+  <script>setTimeout(()=>{try{loadQuoteTable();}catch(e){console.error('preload quote failed',e);}},300);</script>
   <div class="actions">
     <button class="btn" id="quote-export-btn" onclick="exportQuotes()">Export CSV</button>
     <button class="btn red" id="quote-delete-btn" onclick="deleteSelectedQuotes()" style="display:none">Delete Selected (<span id="quote-sel-count">0</span>)</button>
@@ -2619,10 +2689,10 @@ tr.selected-row td{background:#e8f4fd}
   <table id="quote-table" style="font-size:11px;border-collapse:collapse;width:100%">
     <thead><tr>
       <th><input type="checkbox" class="chk-all" onchange="toggleQuoteAll(this)" title="Select All"></th><th>#</th>
-      <th>Link</th><th>Price (USD)</th><th>Backlink Type</th><th>DR</th><th>DA</th>
+      <th>Link</th><th>Price</th><th>Backlink Type</th><th>DR</th><th>DA</th>
       <th>Ref. Domains</th><th>Traffic</th><th>Country</th><th>Keywords</th>
       <th>Categories</th><th>Languages</th><th>TAT</th><th>Permanence</th><th>Contact</th>
-      <th>Cooperation</th><th>Payment</th><th>Discount</th><th>Link Rules</th><th>Content</th><th>Requirements</th><th>Extra Services</th><th>Supplier</th>
+      <th>Cooperation</th><th>Payment</th><th>Discount</th><th>Link Rules</th><th>Status</th>
     </tr></thead><tbody></tbody>
   </table>
   </div>
@@ -3022,10 +3092,10 @@ async function loadQuoteTable(){
   // Quote Pool columns (Jenny template + DR/DA/Traffic/Keywords etc.)
   // All columns always shown; empty if no data for that row.
   let th='<tr><th><input type="checkbox" class="chk-all" onchange="toggleQuoteAll(this)" title="Select All"></th><th>#</th>'+
-    '<th>Link</th><th>Price (USD)</th><th>Backlink Type</th><th>DR</th><th>DA</th>'+
+    '<th>Link</th><th>Price</th><th>Backlink Type</th><th>DR</th><th>DA</th>'+
     '<th>Ref. Domains</th><th>Traffic</th><th>Country</th><th>Keywords</th>'+
     '<th>Categories</th><th>Languages</th><th>TAT</th><th>Permanence</th><th>Contact</th>'+
-    '<th>Cooperation</th><th>Payment</th><th>Discount</th><th>Link Rules</th><th>Content</th><th>Requirements</th><th>Extra Services</th><th>Supplier</th><th>Status</th></tr>';
+    '<th>Cooperation</th><th>Payment</th><th>Discount</th><th>Link Rules</th><th>Status</th></tr>';
 
   const mappedFields=new Set(['domain','price','cooperation_type','traffic','country','site_category','niche','tat','permanence','contact_email','email','supplier','da','dr','ref_domains','keywords','categories','languages','link_rules','content','payment','discount','additional_services','requirements','reply_content','status','notes','discovered_by','discovered_at','quote_id','reply_id','priority','id']);
 
@@ -3040,28 +3110,24 @@ async function loadQuoteTable(){
         <td><input type="checkbox" class="chk-row" onchange="onQuoteCheck(this,${q.quote_id||q.id},${i})"></td>
         <td style="color:var(--muted);font-size:10.5px;text-align:center">${_getGlobalIdx(QUOTE_PAGER.page,limit,i)}</td>
         <td><a href="http://${esc(q.domain)}" target="_blank">${esc(q.domain)}</a></td>
-        <td style="white-space:nowrap">${esc(q.price,'')}</td>
-        <td>${esc(q.site_category||q.niche||'','')}</td>
-        <td>${esc(q.dr||'','')}</td>
-        <td>${esc(q.da||'','')}</td>
-        <td>${esc(q.ref_domains||'','')}</td>
-        <td>${esc(q.traffic||'','')}</td>
-        <td>${esc(q.country||'','')}</td>
-        <td style="max-width:100px;overflow:hidden;text-overflow:ellipsis" title="${esc(q.keywords||'',200)}">${esc(q.keywords||'','')}</td>
-        <td style="max-width:100px;overflow:hidden;text-overflow:ellipsis">${esc(q.categories||'','')}</td>
-        <td>${esc(q.languages||'','')}</td>
-        <td>${esc(q.tat||'','')}</td>
-        <td>${esc(q.permanence||'','')}</td>
-        <td>${esc(q.contact_email||q.email||'','')}</td>
-        <td>${esc(q.cooperation_type||'','')}</td>
-        <td>${esc(q.payment||'','')}</td>
-        <td>${esc(q.discount||'','')}</td>
-        <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis" title="${esc(q.link_rules||'',300)}">${esc(q.link_rules||'','')}</td>
-        <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis" title="${esc(q.content||'',300)}">${esc(q.content||'','')}</td>
-        <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis" title="${esc(q.requirements||'',300)}">${esc(q.requirements||'','')}</td>
-        <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis" title="${esc(q.additional_services||'',300)}">${esc(q.additional_services||'','')}</td>
-        <td>${esc(q.supplier||'','')}</td>
-        <td><span class="status-${(q.status||'New')}">${esc(q.status||'New','')}</span></td>
+        <td style="white-space:nowrap">${esc(q.price)}</td>
+        <td>${esc(q.site_category||q.niche||'')}</td>
+        <td>${esc(q.dr||'')}</td>
+        <td>${esc(q.da||'')}</td>
+        <td>${esc(q.ref_domains||'')}</td>
+        <td>${esc(q.traffic||'')}</td>
+        <td>${esc(q.country||'')}</td>
+        <td style="max-width:100px;overflow:hidden;text-overflow:ellipsis" title="${esc(q.keywords||'',200)}">${esc(q.keywords||'')}</td>
+        <td style="max-width:100px;overflow:hidden;text-overflow:ellipsis">${esc(q.categories||'')}</td>
+        <td>${esc(q.languages||'')}</td>
+        <td>${esc(q.tat||'')}</td>
+        <td>${esc(q.permanence||'')}</td>
+        <td>${esc(q.contact_email||q.email||'')}</td>
+        <td>${esc(q.cooperation_type||'')}</td>
+        <td>${esc(q.payment||'')}</td>
+        <td>${esc(q.discount||'')}</td>
+        <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis" title="${esc(q.link_rules||'',300)}">${esc(q.link_rules||'')}</td>
+        <td><span class="status-${(q.status||'New')}">${esc(q.status||'New')}</span></td>
       </tr>`;
     }).join('');
 
@@ -3253,6 +3319,32 @@ function onLogPageSizeChange() {
 function renderLogPage() {
   let logs = [...LOG.allLogs];
 
+  // Dedupe adjacent bursts: same user+action+pool+count+detail within 2s = same retry burst
+  // Show one row + small "(+N similar)" hint. This fixes the "looks like 30 dupes" view.
+  if (LOG.allLogs.length > 1) {
+    const deduped = [];
+    let i = 0;
+    while (i < logs.length) {
+      let j = i + 1;
+      const a = logs[i];
+      const ta = a.op_time ? new Date(a.op_time.replace(' ', 'T')).getTime() : 0;
+      while (j < logs.length) {
+        const b = logs[j];
+        if (b.user !== a.user || b.type !== a.type || b.pool !== a.pool ||
+            b.count !== a.count || b.detail !== a.detail) break;
+        const tb = b.op_time ? new Date(b.op_time.replace(' ', 'T')).getTime() : 0;
+        if (!tb || !ta || Math.abs(tb - ta) > 2000) break;
+        j++;
+      }
+      const sim = j - i - 1;
+      const row = { ...a };
+      if (sim > 0) row.similar_count = sim;
+      deduped.push(row);
+      i = j;
+    }
+    logs = deduped;
+  }
+
   // Apply pool filter (first-level)
   if (LOG.poolFilter) {
     if (LOG.poolFilter === 'quote') {
@@ -3300,7 +3392,7 @@ function renderLogPage() {
     pageLogs.map((l, i) => `<tr data-id="${esc(l.log_id)}">
       <td><input type="checkbox" class="chk-row" onchange="onLogCheck(this,'${esc(l.log_id)}')"></td>
       <td style="color:var(--muted);font-size:11.5px;text-align:center">${startIdx + i + 1}</td>
-      <td>${esc((l.time || '').slice(0, 16))}</td>
+      <td>${esc((l.time || '').slice(0, 16))}${l.similar_count ? ` <span style="color:var(--muted);font-size:10.5px">(+${l.similar_count} similar)</span>` : ''}</td>
       <td>${esc(l.user)}</td>
       <td><span class="status-${l.type || 'New'}">${_logActionShort(l.type)}</span></td>
       <td>${_logPoolShort(l.type)}</td>
@@ -3461,7 +3553,7 @@ function exportQuotes(){
   // If none selected → export all via backend (same format)
   if(QUOTE_SEL.size){
     const rows=[...QUOTE_SEL].sort((a,b)=>a.idx-b.idx);
-    const headers=['序号','Link','Price (USD)','Backlink Type','DR','DA','Ref. Domains','Traffic','Country','Keywords','Categories','Languages','TAT','Permanence','Contact','Cooperation','Payment','Discount','Link Rules','Content','Requirements','Extra Services','Supplier','其他'];
+    const headers=['序号','Link','Price','Backlink Type','DR','DA','Ref. Domains','Traffic','Country','Keywords','Categories','Languages','TAT','Permanence','Contact','Cooperation','Payment','Discount','Link Rules','Status','其他'];
     const csv='\uFEFF'+headers.join(',')+'\n'+
       rows.map((r,i)=>{
         const tr=r.row||document.querySelector(`#quote-table tr[data-id="${r.id}"]`);
@@ -3550,6 +3642,8 @@ async function exportEmails(){
 
 async function loadAll(){await loadStats();await loadDomainTable();}
 loadAll();
+// 预加载 Quote 数据（不依赖用户点击 tab），避免 switchTab 异常导致空白
+setTimeout(()=>{try{loadQuoteTable();}catch(e){console.error('[init] loadQuoteTable failed',e);}},500);
 setInterval(()=>loadStats().catch(e=>{}),30000);
 </script>
 </body>
