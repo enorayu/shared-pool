@@ -2619,9 +2619,10 @@ tr.selected-row td{background:#e8f4fd}
   <table id="quote-table" style="font-size:11px;border-collapse:collapse;width:100%">
     <thead><tr>
       <th><input type="checkbox" class="chk-all" onchange="toggleQuoteAll(this)" title="Select All"></th><th>#</th>
-      <th>Link</th><th>Price</th><th>Backlink Type</th><th>Traffic</th><th>Country</th>
-      <th>Cooperation</th><th>TAT</th><th>Permanence</th><th>Contact</th>
-      <th>Payment</th><th>Discount</th><th>Link Rules</th><th>Content</th><th>Requirements</th><th>Extra Services</th><th>Supplier</th><th>Status</th>
+      <th>Link</th><th>Price (USD)</th><th>Backlink Type</th><th>DR</th><th>DA</th>
+      <th>Ref. Domains</th><th>Traffic</th><th>Country</th><th>Keywords</th>
+      <th>Categories</th><th>Languages</th><th>TAT</th><th>Permanence</th><th>Contact</th>
+      <th>Cooperation</th><th>Payment</th><th>Discount</th><th>Link Rules</th><th>Content</th><th>Requirements</th><th>Extra Services</th><th>Supplier</th>
     </tr></thead><tbody></tbody>
   </table>
   </div>
@@ -3018,14 +3019,15 @@ async function loadQuoteTable(){
   // Quote Pool: fixed columns (Jenny template), always show all, empty if no data
   const allQuotes = r.quotes || [];
 
-  // Fixed header — only columns that actually exist in quote_pool table
-  // (DR/DA/Ref.Domains/Keywords/Categories/Languages are NOT in the table → removed)
+  // Quote Pool columns (Jenny template + DR/DA/Traffic/Keywords etc.)
+  // All columns always shown; empty if no data for that row.
   let th='<tr><th><input type="checkbox" class="chk-all" onchange="toggleQuoteAll(this)" title="Select All"></th><th>#</th>'+
-    '<th>Link</th><th>Price</th><th>Backlink Type</th><th>Traffic</th><th>Country</th>'+
-    '<th>Cooperation</th><th>TAT</th><th>Permanence</th><th>Contact</th>'+
-    '<th>Payment</th><th>Discount</th><th>Link Rules</th><th>Content</th><th>Requirements</th><th>Extra Services</th><th>Supplier</th><th>Status</th></tr>';
+    '<th>Link</th><th>Price (USD)</th><th>Backlink Type</th><th>DR</th><th>DA</th>'+
+    '<th>Ref. Domains</th><th>Traffic</th><th>Country</th><th>Keywords</th>'+
+    '<th>Categories</th><th>Languages</th><th>TAT</th><th>Permanence</th><th>Contact</th>'+
+    '<th>Cooperation</th><th>Payment</th><th>Discount</th><th>Link Rules</th><th>Content</th><th>Requirements</th><th>Extra Services</th><th>Supplier</th><th>Status</th></tr>';
 
-  const mappedFields=new Set(['domain','price','cooperation_type','traffic','country','site_category','niche','tat','permanence','contact_email','email','supplier','link_rules','content','payment','discount','additional_services','requirements','reply_content','status','notes','discovered_by','discovered_at','quote_id','reply_id','priority','id']);
+  const mappedFields=new Set(['domain','price','cooperation_type','traffic','country','site_category','niche','tat','permanence','contact_email','email','supplier','da','dr','ref_domains','keywords','categories','languages','link_rules','content','payment','discount','additional_services','requirements','reply_content','status','notes','discovered_by','discovered_at','quote_id','reply_id','priority','id']);
 
   let tb=(allQuotes).map((q,i)=>{
       const otherParts=[];
@@ -3038,14 +3040,20 @@ async function loadQuoteTable(){
         <td><input type="checkbox" class="chk-row" onchange="onQuoteCheck(this,${q.quote_id||q.id},${i})"></td>
         <td style="color:var(--muted);font-size:10.5px;text-align:center">${_getGlobalIdx(QUOTE_PAGER.page,limit,i)}</td>
         <td><a href="http://${esc(q.domain)}" target="_blank">${esc(q.domain)}</a></td>
-        <td style="white-space:nowrap;font-weight:600;color:var(--green)">${esc(q.price,'')}</td>
+        <td style="white-space:nowrap">${esc(q.price,'')}</td>
         <td>${esc(q.site_category||q.niche||'','')}</td>
+        <td>${esc(q.dr||'','')}</td>
+        <td>${esc(q.da||'','')}</td>
+        <td>${esc(q.ref_domains||'','')}</td>
         <td>${esc(q.traffic||'','')}</td>
         <td>${esc(q.country||'','')}</td>
-        <td>${esc(q.cooperation_type||'','')}</td>
+        <td style="max-width:100px;overflow:hidden;text-overflow:ellipsis" title="${esc(q.keywords||'',200)}">${esc(q.keywords||'','')}</td>
+        <td style="max-width:100px;overflow:hidden;text-overflow:ellipsis">${esc(q.categories||'','')}</td>
+        <td>${esc(q.languages||'','')}</td>
         <td>${esc(q.tat||'','')}</td>
         <td>${esc(q.permanence||'','')}</td>
         <td>${esc(q.contact_email||q.email||'','')}</td>
+        <td>${esc(q.cooperation_type||'','')}</td>
         <td>${esc(q.payment||'','')}</td>
         <td>${esc(q.discount||'','')}</td>
         <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis" title="${esc(q.link_rules||'',300)}">${esc(q.link_rules||'','')}</td>
