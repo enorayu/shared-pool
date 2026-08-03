@@ -278,6 +278,15 @@ class SB:
             all_results.append(result)
         return resp, all_results
 
+    def delete(self, table, filter_str=None):
+        """Delete rows matching a raw filter string, e.g. 'log_id=in.(1,2,3)'.
+        Returns response object."""
+        path = table
+        if filter_str:
+            path += "?" + filter_str
+        resp, result = self._req("DELETE", path)
+        return resp, result
+
 
 db = SB()
 
@@ -314,27 +323,42 @@ def _utc_to_bj(iso_str):
 # ── Operation Log helpers ───────────────────────────────────
 
 def _log_operation(op_type, user, table_name, count, detail=""):
-    """Log an operation to config table (key='operation_logs')."""
-    try:
-        raw = _get_config("operation_logs", "[]")
-        logs = json.loads(raw) if raw else []
-    except Exception:
-        logs = []
+    """Log an operation to the independent operation_log table.
 
-    log_entry = {
-        "log_id": str(int(time.time() * 1000)) + str(uuid.uuid4().hex[:6]),
-        "time": now_iso(),
+    The legacy approach stored all logs in a single config JSON field
+    (key='operation_logs'), which silently failed once it exceeded
+    Supabase's row-size limit (~了几万条后写入被拒). Now each operation
+    is a separate row in operation_log, so it never overflows.
+    """
+    row = {
         "type": op_type,
-        "user": user or "unknown",
-        "table": table_name,
-        "count": count,
-        "detail": detail,
+        "username": user or "unknown",
+        "pool": table_name,
+        "count": int(count or 0),
+        "detail": detail or "",
     }
-    logs.insert(0, log_entry)  # newest first
-
-    # Keep only last 1000 entries
-    logs = logs[:1000]
-    _set_config("operation_logs", json.dumps(logs, ensure_ascii=False), "Operation logs")
+    try:
+        db.insert("operation_log", [row])
+    except Exception as e:
+        # Fallback: if the table does not exist yet (pre-migration),
+        # keep writing to the legacy config field so logs are not lost.
+        try:
+            raw = _get_config("operation_logs", "[]")
+            logs = json.loads(raw) if raw else []
+            log_entry = {
+                "log_id": str(int(time.time() * 1000)) + str(uuid.uuid4().hex[:6]),
+                "time": now_iso(),
+                "type": op_type,
+                "user": user or "unknown",
+                "table": table_name,
+                "count": count,
+                "detail": detail,
+            }
+            logs.insert(0, log_entry)
+            logs = logs[:1000]
+            _set_config("operation_logs", json.dumps(logs, ensure_ascii=False), "Operation logs")
+        except Exception:
+            pass
 
 
 # ── Health ──────────────────────────────────────────────────
@@ -2058,50 +2082,124 @@ def domain_import_log():
 
 @app.route("/api/log/list", methods=["GET"])
 def log_list():
-    """List operation logs (import/export/distribute)."""
+    """List operation logs (import/export/distribute).
+
+    Reads from the independent operation_log table (new), falling back
+    to the legacy config JSON blob (pre-migration). Results are merged,
+    de-duplicated, sorted newest-first, then filtered/paginated.
+    """
     limit = min(int(request.args.get("limit", 100)), 1000)
     op_type = request.args.get("type", "")
     user = request.args.get("user", "")
 
+    logs = []
+
+    # 1) New table
+    try:
+        rows = db.select(
+            "operation_log",
+            select="log_id,op_time,type,username,pool,count,detail",
+            order="op_time",
+            ascending=False,
+            limit=limit * 2,  # over-fetch so filter still has enough after merge
+        )
+        for r in rows:
+            logs.append({
+                "log_id": "op_" + str(r.get("log_id")),
+                "time": _utc_to_bj(str(r.get("op_time"))),
+                "type": r.get("type"),
+                "user": r.get("username"),
+                "table": r.get("pool"),
+                "count": r.get("count", 0),
+                "detail": r.get("detail") or "",
+            })
+    except Exception:
+        pass
+
+    # 2) Legacy config blob (pre-migration / fallback)
     try:
         raw = _get_config("operation_logs", "[]")
-        logs = json.loads(raw) if raw else []
+        legacy = json.loads(raw) if raw else []
+        for l in legacy:
+            l.setdefault("log_id", "legacy_" + str(l.get("time")))
+            logs.append(l)
     except Exception:
-        logs = []
+        pass
+
+    # De-dup by log_id
+    seen = set()
+    unique = []
+    for l in logs:
+        lid = l.get("log_id")
+        if lid in seen:
+            continue
+        seen.add(lid)
+        unique.append(l)
+
+    # Sort newest-first by time (string ISO sorts lexically for same format)
+    unique.sort(key=lambda x: str(x.get("time", "")), reverse=True)
 
     # Filter
     if op_type:
-        logs = [l for l in logs if l.get("type") == op_type]
+        unique = [l for l in unique if l.get("type") == op_type]
     if user:
-        logs = [l for l in logs if l.get("user") == user]
+        unique = [l for l in unique if l.get("user") == user]
 
-    logs = logs[:limit]
+    unique = unique[:limit]
 
     # Convert legacy UTC timestamps to Beijing time for display
-    for l in logs:
+    for l in unique:
         if "time" in l:
             l["time"] = _utc_to_bj(l["time"])
 
-    return jsonify({"logs": logs, "count": len(logs)})
+    return jsonify({"logs": unique, "count": len(unique)})
 
 
 @app.route("/api/log/delete", methods=["POST"])
 def log_delete():
-    """Delete operation log entries by log_id list."""
+    """Delete operation log entries by log_id list.
+
+    New-table ids are prefixed 'op_<id>' (delete from operation_log by PK).
+    Legacy ids are prefixed 'legacy_<time>' (remove from config blob).
+    """
     data = request.get_json(force=True, silent=True) or {}
     ids = data.get("ids") or []
     if not ids:
         return jsonify({"error": "no ids provided"}), 400
-    try:
-        raw = _get_config("operation_logs", "[]")
-        logs = json.loads(raw) if raw else []
-        before = len(logs)
-        logs = [l for l in logs if l.get("log_id") not in ids]
-        removed = before - len(logs)
-        _set_config("operation_logs", json.dumps(logs, ensure_ascii=False), "Operation logs")
-        return jsonify({"deleted": removed, "remaining": len(logs)})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+
+    new_ids = []
+    legacy_ids = []
+    for i in ids:
+        if str(i).startswith("op_"):
+            new_ids.append(int(str(i)[3:]))
+        elif str(i).startswith("legacy_"):
+            legacy_ids.append(i)
+
+    removed = 0
+
+    # Delete from new table
+    if new_ids:
+        try:
+            # Supabase delete with filter: operation_log?log_id=in.(1,2,3)
+            filt = "log_id=in.(" + ",".join(str(x) for x in new_ids) + ")"
+            db.delete("operation_log", filt)
+            removed += len(new_ids)
+        except Exception:
+            pass
+
+    # Delete from legacy config blob
+    if legacy_ids:
+        try:
+            raw = _get_config("operation_logs", "[]")
+            logs = json.loads(raw) if raw else []
+            before = len(logs)
+            logs = [l for l in logs if l.get("log_id") not in legacy_ids]
+            removed += (before - len(logs))
+            _set_config("operation_logs", json.dumps(logs, ensure_ascii=False), "Operation logs")
+        except Exception:
+            pass
+
+    return jsonify({"deleted": removed, "remaining": -1})
 
 
 # ════════════════════════════════════════════════════════════
@@ -2205,6 +2303,42 @@ CREATE POLICY "anon_can_insert_replies" ON reply_pool
 -- Allow anon updates
 CREATE POLICY "anon_can_update_replies" ON reply_pool
     FOR UPDATE USING (true);
+
+
+-- ════════════════════════════════════════════════════════════
+-- operation_log (independent table — replaces config JSON blob)
+-- The old approach stored all logs in a single config JSON field,
+-- which silently failed once it exceeded Supabase's row size limit.
+-- ════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS operation_log (
+    log_id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    op_time             TIMESTAMPTZ DEFAULT NOW(),
+    type                TEXT,
+    username            TEXT,
+    pool                TEXT,
+    count               INT DEFAULT 0,
+    detail              TEXT,
+    created_at          TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_op_log_time ON operation_log(op_time DESC);
+CREATE INDEX IF NOT EXISTS idx_op_log_type ON operation_log(type);
+
+-- Enable RLS for operation_log
+ALTER TABLE operation_log ENABLE ROW LEVEL SECURITY;
+
+-- Allow anon reads
+CREATE POLICY "anon_can_read_op_log" ON operation_log
+    FOR SELECT USING (true);
+
+-- Allow anon inserts
+CREATE POLICY "anon_can_insert_op_log" ON operation_log
+    FOR INSERT WITH CHECK (true);
+
+-- Allow anon deletes
+CREATE POLICY "anon_can_delete_op_log" ON operation_log
+    FOR DELETE USING (true);
 """
 
 
@@ -2212,7 +2346,7 @@ CREATE POLICY "anon_can_update_replies" ON reply_pool
 def setup_page():
     """Show setup instructions."""
     tables_found = {}
-    for tbl in ["domain_pool", "email_pool", "supplier_pool", "quote_pool", "reply_pool", "config"]:
+    for tbl in ["domain_pool", "email_pool", "supplier_pool", "quote_pool", "reply_pool", "operation_log", "config"]:
         try:
             cnt = db.count(tbl)
             tables_found[tbl] = f"OK ({cnt} rows)"
@@ -2239,10 +2373,10 @@ h2{{border-top:1px solid #e0e0e0;padding-top:20px;margin-top:30px}}
 <h1>Shared Pool v2 — Setup</h1>
 <p>Supabase: <code>{SUPABASE_URL}</code></p>
 <table>{rows}</table>
-<p>If <b>email_pool</b> or <b>reply_pool</b> is MISSING, copy the SQL below to your Supabase SQL Editor:</p>
+<p>If any of <b>email_pool</b>, <b>reply_pool</b> or <b>operation_log</b> is MISSING, copy the SQL below to your Supabase SQL Editor:</p>
 <h2>email_pool</h2>
 <pre>{EMAIL_POOL_SQL}</pre>
-<h2>reply_pool</h2>
+<h2>reply_pool + operation_log</h2>
 <pre>{SETUP_SQL}</pre>
 <p><a href="/">← Back to Dashboard</a></p>
 </body></html>"""
