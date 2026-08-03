@@ -2283,10 +2283,10 @@ h1{font-size:18px;font-weight:500;margin-bottom:2px}
 .export-sel-btn:disabled{opacity:.4;cursor:not-allowed}
 .sel-count{font-size:12px;color:var(--muted);padding:0 8px}
 /* ── Enhanced table styles ── */
-table{width:100%;border-collapse:collapse;background:var(--card);border:0.5px solid var(--border);border-radius:10px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.04)}
-th,td{text-align:left;padding:9px 14px;font-size:12.5px}
+table{width:100%;border-collapse:collapse;background:var(--card);border:0.5px solid var(--border);border-radius:10px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.04);table-layout:fixed}
+th,td{text-align:left;padding:7px 10px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 th{font-weight:600;background:linear-gradient(180deg,#f8f9fa 0%,#f1f3f5 100%);border-bottom:1.5px solid #d0d7de;color:var(--text);position:sticky;top:0;z-index:1;text-transform:none;letter-spacing:.3px}
-td{border-bottom:0.5px solid #eef1f4;transition:background .15s}
+td{border-bottom:0.5px solid #eef1f4;transition:background .15s;vertical-align:middle}
 tr:hover td{background:#f7fafc}
 tr:last-child td{border-bottom:none}
 tr.selected-row td{background:#e8f4fd}
@@ -3413,9 +3413,9 @@ async function exportEmails(){
   loadStats();
 }
 
-function loadAll(){loadStats();loadDomainTable();}
+async function loadAll(){await loadStats();await loadDomainTable();}
 loadAll();
-setInterval(loadStats,15000);
+setInterval(()=>loadStats().catch(e=>{}),30000);
 </script>
 </body>
 </html>"""
