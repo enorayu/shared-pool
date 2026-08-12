@@ -2909,7 +2909,7 @@ tr.selected-row td{background:#e8f4fd}
       <th class="col-keywords">Keywords</th>
       <th class="q-col-extra">Categories</th><th class="q-col-extra">Languages</th>
       <th class="q-col-extra">TAT</th><th>Permanence</th><th class="col-contact">Contact</th>
-      <th class="q-col-extra">Cooperation</th><th class="q-col-extra">Payment</th><th class="q-col-extra">Discount</th>
+      <th class="q-col-extra">Cooperation</th><th class="q-col-extra">Payment</th>
       <th class="col-linkrules">Link Rules</th><th>Status</th>
     </tr></thead><tbody></tbody>
   </table>
@@ -3321,7 +3321,7 @@ async function loadQuoteTable(){
     '<th class="col-keywords">Keywords</th>'+
     '<th class="q-col-extra">Categories</th><th class="q-col-extra">Languages</th>'+
     '<th class="q-col-extra">TAT</th><th>Permanence</th><th class="col-contact">Contact</th>'+
-    '<th class="q-col-extra">Cooperation</th><th class="q-col-extra">Payment</th><th class="q-col-extra">Discount</th>'+
+    '<th class="q-col-extra">Cooperation</th><th class="q-col-extra">Payment</th>'+
     '<th class="col-linkrules">Link Rules</th><th>Status</th></tr>';
 
   const mappedFields=new Set(['domain','price','cooperation_type','traffic','country','site_category','niche','tat','permanence','contact_email','email','supplier','da','dr','ref_domains','keywords','categories','languages','link_rules','content','payment','discount','additional_services','requirements','reply_content','status','notes','discovered_by','discovered_at','quote_id','reply_id','priority','id']);
@@ -3356,7 +3356,6 @@ async function loadQuoteTable(){
         <td title="${esc(rawContact)}">${esc(displayContact)}</td>
         <td class="q-col-extra">${esc(q.cooperation_type||'')}</td>
         <td class="q-col-extra">${esc(q.payment||'')}</td>
-        <td class="q-col-extra">${esc(q.discount||'')}</td>
         <td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(q.link_rules||'',300)}">${esc(q.link_rules||'')}</td>
         <td><span class="status-${(q.status||'New')}">${esc(q.status||'New')}</span></td>
       </tr>`;
