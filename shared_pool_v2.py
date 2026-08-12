@@ -1382,11 +1382,12 @@ def quote_add():
 @app.route("/api/price/list", methods=["GET"])
 @app.route("/api/quote/list", methods=["GET"])
 def quote_list():
-    """List quotes with optional filters."""
+    """List quotes with optional filters and full-text keyword search."""
     domain = request.args.get("domain", "")
     status = request.args.get("status", "")
     niche = request.args.get("niche", "")
     supplier = request.args.get("supplier", "")
+    search = request.args.get("search", "").strip()
     limit = min(int(request.args.get("limit", 100)), 1000)
     offset = int(request.args.get("offset", 0))
 
@@ -1399,6 +1400,38 @@ def quote_list():
         filters["niche"] = niche
     if supplier:
         filters["supplier"] = supplier
+
+    # Keyword search: build or= filter across key text fields
+    # PostgREST uses * as wildcard (not SQL %), and or=(...) parenthesized format
+    if search:
+        # Escape special chars in search term for safe inclusion in filter
+        safe_search = search.replace("*", "\\*").replace("%", "\\%").replace("_", "\\_")
+        or_clauses = ",".join([
+            f"domain.ilike.*{safe_search}*",
+            f"supplier.ilike.*{safe_search}*",
+            f"email.ilike.*{safe_search}*",
+            f"contact_email.ilike.*{safe_search}*",
+            f"content.ilike.*{safe_search}*",
+            f"notes.ilike.*{safe_search}*",
+            f"country.ilike.*{safe_search}*",
+            f"niche.ilike.*{safe_search}*",
+            f"site_category.ilike.*{safe_search}*",
+            f"keywords.ilike.*{safe_search}*",
+            f"categories.ilike.*{safe_search}*",
+            f"link_rules.ilike.*{safe_search}*",
+        ])
+        # Use direct _req call so we control the exact query string
+        qs_parts = [f"select=*", f"limit={limit}", f"offset={offset}",
+                     f"order=discovered_at.desc", f"or=({or_clauses})"]
+        for k, v in filters.items():
+            fp = db._filter_part(k, v)
+            if fp:
+                qs_parts.append(fp)
+        qs = "&".join(qs_parts)
+        resp, data = db._req("GET", f"quote_pool?{qs}", extra_headers={"Prefer": "count=exact"})
+        total = int((resp.headers.get("Content-Range") or "*/0").split("/")[-1])
+        quotes = data if isinstance(data, list) else []
+        return jsonify({"quotes": quotes or [], "total": total, "offset": offset})
 
     quotes = db.select(
         "quote_pool",
@@ -2831,6 +2864,9 @@ tr.selected-row td{background:#e8f4fd}
     <button class="btn red" id="quote-delete-btn" onclick="deleteSelectedQuotes()" style="display:none">Delete Selected (<span id="quote-sel-count">0</span>)</button>
     <label style="font-size:12px;color:var(--muted)">User</label><input id="q-user" placeholder="your name" style="width:100px" onchange="saveUserName()">
     <label style="font-size:12px;color:var(--muted)">User Filter</label><select id="q-user-filter" onchange="loadQuoteTable()"><option value="">All Users</option></select>
+    <label style="font-size:12px;color:var(--muted)"><svg style="vertical-align:-2px;width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg> Search</label>
+    <input id="q-search" placeholder="domain, supplier, email, keyword..." style="width:200px;padding:4px 8px;font-size:12px;border:0.5px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text)" onkeydown="if(event.key==='Enter'){QUOTE_PAGER.page=1;loadQuoteTable()}">
+    <button class="btn" style="font-size:11px;padding:4px 10px" onclick="QUOTE_PAGER.page=1;loadQuoteTable()">Search</button>
     <button class="btn green" onclick="importARepliesToQuotes()">Import A-class replies</button>
     <button class="btn" onclick="toggleQuoteImport()">Import from File</button>
     <span id="quote-import-result" style="font-size:12px;color:var(--muted)"></span>
@@ -2845,24 +2881,37 @@ tr.selected-row td{background:#e8f4fd}
     <button class="btn" style="font-size:11px" onclick="downloadQuoteTemplate()">Download Template</button>
     <span id="quote-import-file-result" style="font-size:12px;color:var(--muted)"></span>
   </div>
-  <div style="overflow-x:auto">
+  <div style="overflow-x:auto;max-height:calc(100vh - 320px);overflow-y:auto">
+  <div style="margin-bottom:4px;text-align:right">
+    <label style="font-size:11.5px;color:var(--muted);cursor:pointer" onclick="toggleQuoteCols()">
+      <input type="checkbox" id="q-show-all-cols"> Hide low-freq columns (DR/DA/Traffic/TAT/etc.)
+    </label>
+  </div>
   <style>
-    #quote-table{font-size:12px;border-collapse:collapse;width:100%}
-    #quote-table th,#quote-table td{padding:12px 10px;vertical-align:middle}
-    #quote-table tbody tr{min-height:38px}
-    #quote-table th{white-space:nowrap}
-    #quote-table th.col-link{width:180px}
-    #quote-table th.col-keywords{width:160px}
-    #quote-table th.col-linkrules{width:200px}
-    #quote-table th.col-contact{width:200px}
+    #quote-table{font-size:12px;border-collapse:collapse;width:auto;min-width:100%}
+    #quote-table th,#quote-table td{padding:4px 7px;vertical-align:middle;line-height:1.25}
+    #quote-table tbody tr{min-height:26px}
+    #quote-table th{white-space:nowrap;font-size:11px;font-weight:600}
+    #quote-table th.col-link{width:160px}
+    #quote-table th.col-keywords{width:120px}
+    #quote-table th.col-linkrules{width:140px}
+    #quote-table th.col-contact{width:150px}
+    #quote-table td{font-size:12px}
+    /* All columns visible by default (was hidden, reverted per user request) */
+    .q-col-extra{display:table-cell}
+    body.hide-quote-extra-cols .q-col-extra{display:none}
   </style>
   <table id="quote-table">
     <thead><tr>
       <th><input type="checkbox" class="chk-all" onchange="toggleQuoteAll(this)" title="Select All"></th><th>#</th>
-      <th class="col-link">Link</th><th>Price</th><th>Backlink Type</th><th>DR</th><th>DA</th>
-      <th>Ref. Domains</th><th>Traffic</th><th>Country</th><th class="col-keywords">Keywords</th>
-      <th>Categories</th><th>Languages</th><th>TAT</th><th>Permanence</th><th class="col-contact">Contact</th>
-      <th>Cooperation</th><th>Payment</th><th>Discount</th><th class="col-linkrules">Link Rules</th><th>Status</th>
+      <th class="col-link">Link</th><th>Price</th><th>Backlink Type</th>
+      <th class="q-col-extra">DR</th><th class="q-col-extra">DA</th>
+      <th class="q-col-extra">Ref. Domains</th><th class="q-col-extra">Traffic</th><th>Country</th>
+      <th class="col-keywords">Keywords</th>
+      <th class="q-col-extra">Categories</th><th class="q-col-extra">Languages</th>
+      <th class="q-col-extra">TAT</th><th>Permanence</th><th class="col-contact">Contact</th>
+      <th class="q-col-extra">Cooperation</th><th class="q-col-extra">Payment</th><th class="q-col-extra">Discount</th>
+      <th class="col-linkrules">Link Rules</th><th>Status</th>
     </tr></thead><tbody></tbody>
   </table>
   </div>
@@ -2873,7 +2922,8 @@ tr.selected-row td{background:#e8f4fd}
     <button class="btn" onclick="changeQuotePage(1)">Next</button>
     <label style="font-size:12px;color:var(--muted);margin-left:16px">Per page:</label>
     <select id="quote-page-size" onchange="onQuotePageSizeChange()" style="padding:4px 8px;font-size:12px;border:0.5px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text)">
-      <option value="10" selected>10</option>
+      <option value="10">10</option>
+      <option value="20" selected>20</option>
       <option value="20">20</option>
       <option value="50">50</option>
     </select>
@@ -2940,7 +2990,7 @@ function esc(s,n=80){return String(s||'').replace(/</g,'&lt;').slice(0,n)}
 const DOMAIN_PAGER={page:1,pageSize:10};
 const EMAIL_PAGER ={page:1,pageSize:10};
 const REPLY_PAGER ={page:1,pageSize:10,category:''};
-const QUOTE_PAGER ={page:1,pageSize:10};
+const QUOTE_PAGER ={page:1,pageSize:20};
 
 // ── User name via localStorage ──
 function getUserName(){
@@ -3251,7 +3301,11 @@ async function loadQuoteTable(){
   const limit=QUOTE_PAGER.pageSize;
   const offset=(QUOTE_PAGER.page-1)*limit;
   const userFilter=document.getElementById('q-user-filter').value;
-  const r=await fetch(API+'/api/quote/list?limit='+limit+'&offset='+offset+(userFilter?'&supplier='+encodeURIComponent(userFilter):'')).then(r=>r.json());
+  const searchVal=(document.getElementById('q-search')||{}).value||'';
+  let url=API+'/api/quote/list?limit='+limit+'&offset='+offset;
+  if(userFilter) url+='&supplier='+encodeURIComponent(userFilter);
+  if(searchVal.trim()) url+='&search='+encodeURIComponent(searchVal.trim());
+  const r=await fetch(url).then(r=>r.json());
   const total=r.total||0;
   const maxPage=Math.max(1,Math.ceil(total/limit));
   if(QUOTE_PAGER.page>maxPage){QUOTE_PAGER.page=maxPage;}
@@ -3262,10 +3316,14 @@ async function loadQuoteTable(){
   // Quote Pool columns (Jenny template + DR/DA/Traffic/Keywords etc.)
   // All columns always shown; empty if no data for that row.
   let th='<tr><th><input type="checkbox" class="chk-all" onchange="toggleQuoteAll(this)" title="Select All"></th><th>#</th>'+
-    '<th class="col-link">Link</th><th>Price</th><th>Backlink Type</th><th>DR</th><th>DA</th>'+
-    '<th>Ref. Domains</th><th>Traffic</th><th>Country</th><th class="col-keywords">Keywords</th>'+
-    '<th>Categories</th><th>Languages</th><th>TAT</th><th>Permanence</th><th class="col-contact">Contact</th>'+
-    '<th>Cooperation</th><th>Payment</th><th>Discount</th><th class="col-linkrules">Link Rules</th><th>Status</th></tr>';
+    '<th class="col-link">Link</th><th>Price</th><th>Backlink Type</th>'+
+    '<th class="q-col-extra">DR</th><th class="q-col-extra">DA</th>'+
+    '<th class="q-col-extra">Ref. Domains</th><th class="q-col-extra">Traffic</th><th>Country</th>'+
+    '<th class="col-keywords">Keywords</th>'+
+    '<th class="q-col-extra">Categories</th><th class="q-col-extra">Languages</th>'+
+    '<th class="q-col-extra">TAT</th><th>Permanence</th><th class="col-contact">Contact</th>'+
+    '<th class="q-col-extra">Cooperation</th><th class="q-col-extra">Payment</th><th class="q-col-extra">Discount</th>'+
+    '<th class="col-linkrules">Link Rules</th><th>Status</th></tr>';
 
   const mappedFields=new Set(['domain','price','cooperation_type','traffic','country','site_category','niche','tat','permanence','contact_email','email','supplier','da','dr','ref_domains','keywords','categories','languages','link_rules','content','payment','discount','additional_services','requirements','reply_content','status','notes','discovered_by','discovered_at','quote_id','reply_id','priority','id']);
 
@@ -3286,21 +3344,21 @@ async function loadQuoteTable(){
         <td><a href="http://${esc(q.domain)}" target="_blank">${esc(q.domain)}</a></td>
         <td style="white-space:nowrap">${esc(q.price)}</td>
         <td>${esc(q.site_category||q.niche||'')}</td>
-        <td>${esc(q.dr||'')}</td>
-        <td>${esc(q.da||'')}</td>
-        <td>${esc(q.ref_domains||'')}</td>
-        <td>${esc(q.traffic||'')}</td>
+        <td class="q-col-extra">${esc(q.dr||'')}</td>
+        <td class="q-col-extra">${esc(q.da||'')}</td>
+        <td class="q-col-extra">${esc(q.ref_domains||'')}</td>
+        <td class="q-col-extra">${esc(q.traffic||'')}</td>
         <td>${esc(q.country||'')}</td>
-        <td style="max-width:100px;overflow:hidden;text-overflow:ellipsis" title="${esc(q.keywords||'',200)}">${esc(q.keywords||'')}</td>
-        <td style="max-width:100px;overflow:hidden;text-overflow:ellipsis">${esc(q.categories||'')}</td>
-        <td>${esc(q.languages||'')}</td>
-        <td>${esc(q.tat||'')}</td>
+        <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(q.keywords||'',200)}">${esc(q.keywords||'')}</td>
+        <td class="q-col-extra" style="max-width:100px;overflow:hidden;text-overflow:ellipsis">${esc(q.categories||'')}</td>
+        <td class="q-col-extra">${esc(q.languages||'')}</td>
+        <td class="q-col-extra">${esc(q.tat||'')}</td>
         <td>${esc(q.permanence||'')}</td>
         <td title="${esc(rawContact)}">${esc(displayContact)}</td>
-        <td>${esc(q.cooperation_type||'')}</td>
-        <td>${esc(q.payment||'')}</td>
-        <td>${esc(q.discount||'')}</td>
-        <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis" title="${esc(q.link_rules||'',300)}">${esc(q.link_rules||'')}</td>
+        <td class="q-col-extra">${esc(q.cooperation_type||'')}</td>
+        <td class="q-col-extra">${esc(q.payment||'')}</td>
+        <td class="q-col-extra">${esc(q.discount||'')}</td>
+        <td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(q.link_rules||'',300)}">${esc(q.link_rules||'')}</td>
         <td><span class="status-${(q.status||'New')}">${esc(q.status||'New')}</span></td>
       </tr>`;
     }).join('');
@@ -3330,6 +3388,9 @@ function onQuotePageSizeChange(){
   QUOTE_PAGER.pageSize=parseInt(document.getElementById('quote-page-size').value)||50;
   QUOTE_PAGER.page=1;
   loadQuoteTable();
+}
+function toggleQuoteCols(){
+  document.body.classList.toggle('hide-quote-extra-cols',document.getElementById('q-show-all-cols').checked);
 }
 
 function toggleEmailImport(){
