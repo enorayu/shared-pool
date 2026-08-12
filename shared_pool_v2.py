@@ -1483,31 +1483,23 @@ def quote_export():
     headers = ["#", "Link", "Price", "Backlink Type", "DR", "DA",
                "Ref. Domains", "Traffic", "Country", "Keywords",
                "Categories", "Languages", "TAT", "Permanence", "Contact",
-               "Cooperation", "Payment", "Discount", "Link Rules", "Status", "其他"]
+               "Cooperation", "Payment", "Discount", "Link Rules", "Status",
+               "Normalized Price", "Currency", "Price Type", "Data Status"]
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(headers)
 
-    # Fields already represented as explicit columns → exclude from "其他"
-    mapped_keys = {'domain','price','cooperation_type','traffic','country',
-                   'site_category','niche','tat','permanence','contact_email',
-                   'email','supplier','da','dr','ref_domains','keywords',
-                   'categories','languages','link_rules','content','payment',
-                   'discount','additional_services','requirements',
-                   'reply_content','status','notes','discovered_by',
-                   'discovered_at','quote_id','reply_id','id','priority'}
-
     for idx, q in enumerate(quotes or [], 1):
-        # Build "其他" column from truly unmapped fields only
-        other_parts = []
-        for k, v in q.items():
-            if k.lower() not in mapped_keys and v is not None and str(v).strip():
-                other_parts.append(f"{k}: {v}")
-
+        # Price 主列回填：优先 normalized_price（USD 标准化），否则回退原始 price
+        norm = q.get("normalized_price")
+        price_cell = safe_str(norm) if norm is not None and str(norm).strip() != "" else safe_str(q.get("price"))
+        # Link 主列：domain 已是 canonical 标准化后的真实域名
+        link_cell = safe_str(q.get("domain"))
+        # 导出时也带上标准化字段，便于 downstream 直接使用
         writer.writerow([
             idx,
-            q.get("domain", ""),
-            safe_str(q.get("price")),
+            link_cell,
+            price_cell,
             safe_str(q.get("site_category") or q.get("niche")),
             safe_str(q.get("dr") or q.get("traffic")),
             safe_str(q.get("da")),
@@ -1528,7 +1520,10 @@ def quote_export():
             safe_str(q.get("requirements")),
             safe_str(q.get("additional_services")),
             safe_str(q.get("supplier")),
-            " | ".join(other_parts),
+            safe_str(norm) if norm is not None and str(norm).strip() != "" else "",
+            safe_str(q.get("normalized_currency")),
+            safe_str(q.get("price_type")),
+            safe_str(q.get("data_status")),
         ])
 
     # UTF-8 with BOM so Excel (zh-CN / Windows) opens Chinese fields correctly.
