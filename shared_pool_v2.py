@@ -1495,35 +1495,32 @@ def quote_export():
         price_cell = safe_str(norm) if norm is not None and str(norm).strip() != "" else safe_str(q.get("price"))
         # Link 主列：domain 已是 canonical 标准化后的真实域名
         link_cell = safe_str(q.get("domain"))
-        # 导出时也带上标准化字段，便于 downstream 直接使用
+        # 严格按 headers 顺序一一对应
         writer.writerow([
-            idx,
-            link_cell,
-            price_cell,
-            safe_str(q.get("site_category") or q.get("niche")),
-            safe_str(q.get("dr") or q.get("traffic")),
-            safe_str(q.get("da")),
-            safe_str(q.get("ref_domains")),
-            safe_str(q.get("traffic")),
-            safe_str(q.get("country")),
-            safe_str(q.get("niche") or q.get("site_category")),
-            safe_str(q.get("site_category") or q.get("niche")),
-            safe_str(q.get("languages")),
-            safe_str(q.get("tat")),
-            safe_str(q.get("permanence")),
-            safe_str(q.get("contact_email") or q.get("email")),
-            safe_str(q.get("cooperation_type")),
-            safe_str(q.get("payment")),
-            safe_str(q.get("discount")),
-            safe_str(q.get("link_rules")),
-            safe_str(q.get("content")),
-            safe_str(q.get("requirements")),
-            safe_str(q.get("additional_services")),
-            safe_str(q.get("supplier")),
-            safe_str(norm) if norm is not None and str(norm).strip() != "" else "",
-            safe_str(q.get("normalized_currency")),
-            safe_str(q.get("price_type")),
-            safe_str(q.get("data_status")),
+            idx,                                          # 0  #
+            link_cell,                                    # 1  Link
+            price_cell,                                   # 2  Price (normalized USD or fallback raw)
+            safe_str(q.get("site_category") or q.get("niche")),   # 3  Backlink Type
+            safe_str(q.get("dr") or q.get("traffic")),     # 4  DR
+            safe_str(q.get("da")),                         # 5  DA
+            safe_str(q.get("ref_domains")),                # 6  Ref. Domains
+            safe_str(q.get("traffic")),                    # 7  Traffic
+            safe_str(q.get("country")),                    # 8  Country
+            safe_str(q.get("keywords")),                   # 9  Keywords
+            safe_str(q.get("categories")),                 # 10 Categories
+            safe_str(q.get("languages")),                  # 11 Languages
+            safe_str(q.get("tat")),                        # 12 TAT
+            safe_str(q.get("permanence")),                 # 13 Permanence
+            safe_str(q.get("contact_email") or q.get("email")),  # 14 Contact
+            safe_str(q.get("cooperation_type")),           # 15 Cooperation
+            safe_str(q.get("payment")),                    # 16 Payment
+            safe_str(q.get("discount")),                   # 17 Discount
+            safe_str(q.get("link_rules")),                 # 18 Link Rules
+            safe_str(q.get("status")),                     # 19 Status
+            safe_str(norm) if norm is not None and str(norm).strip() != "" else "",  # 20 Normalized Price
+            safe_str(q.get("normalized_currency")),         # 21 Currency
+            safe_str(q.get("price_type")),                 # 22 Price Type
+            safe_str(q.get("data_status")),                # 23 Data Status
         ])
 
     # UTF-8 with BOM so Excel (zh-CN / Windows) opens Chinese fields correctly.
