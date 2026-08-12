@@ -1499,14 +1499,8 @@ def quote_export():
             price_cell = f"{price_display} {q.get('normalized_currency') or 'USD'}"
         else:
             price_cell = safe_str(q.get("price"))
-        # Link: domain 已是 canonical 标准化后的真实域名
-        # 异常域名前缀标注 data_status
-        link_raw = safe_str(q.get("domain"))
-        ds = q.get("data_status") or ""
-        if ds and ds != "READY":
-            link_cell = f"[{ds}] {link_raw}"
-        else:
-            link_cell = link_raw
+        # Link: domain 已是 canonical 标准化后的真实域名（异常靠 Data Status 列+前端颜色区分）
+        link_cell = safe_str(q.get("domain"))
         writer.writerow([
             idx,                                          # 0  #
             link_cell,                                    # 1  Link (异常域名带 [NEED_DOMAIN] 前缀)
@@ -3337,7 +3331,14 @@ async function loadQuoteTable(){
       const rawContact=q.contact_email||q.email||'';
       const displayContact=rawContact.replace(/\+[^@]+(?=@)/,'');
 
-      return `<tr data-idx="${i}" data-id="${q.quote_id||q.id}">
+      // 异常行背景色
+      const _ds = (q.data_status||'').trim();
+      let _rowStyle = '';
+      if (_ds === 'NEED_DOMAIN') _rowStyle = 'background:#fff0f0';        // 浅红
+      else if (_ds === 'NEED_PRICE') _rowStyle = 'background:#fff8e0';    // 浅黄
+      else if (_ds && _ds !== 'READY') _rowStyle = 'background:#fff4e0';  // 浅橙(NEED_REVIEW等)
+
+      return `<tr data-idx="${i}" data-id="${q.quote_id||q.id}"${_rowStyle ? ` style="${_rowStyle}"` : ''}>
         <td><input type="checkbox" class="chk-row" onchange="onQuoteCheck(this,${q.quote_id||q.id},${i})"></td>
         <td style="color:var(--muted);font-size:10.5px;text-align:center">${_getGlobalIdx(QUOTE_PAGER.page,limit,i)}</td>
         <td><a href="http://${esc(q.domain)}" target="_blank">${esc(q.domain)}</a></td>
