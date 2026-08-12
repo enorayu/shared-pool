@@ -1483,7 +1483,7 @@ def quote_export():
     headers = ["#", "Link", "Price", "Backlink Type", "DR", "DA",
                "Ref. Domains", "Traffic", "Country", "Keywords",
                "Categories", "Languages", "TAT", "Permanence", "Contact",
-               "Cooperation", "Payment", "Discount", "Link Rules", "Status",
+               "Cooperation", "Payment", "Link Rules", "Status",
                "Data Status"]
     output = io.StringIO()
     writer = csv.writer(output)
@@ -1525,10 +1525,9 @@ def quote_export():
             safe_str(q.get("contact_email") or q.get("email")),  # 14 Contact
             safe_str(q.get("cooperation_type")),           # 15 Cooperation
             safe_str(q.get("payment")),                    # 16 Payment
-            safe_str(q.get("discount")),                   # 17 Discount
-            safe_str(q.get("link_rules")),                 # 18 Link Rules
-            safe_str(q.get("status")),                     # 19 Status
-            safe_str(q.get("data_status")),                # 20 Data Status
+            safe_str(q.get("link_rules")),                 # 17 Link Rules
+            safe_str(q.get("status")),                     # 18 Status
+            safe_str(q.get("data_status")),                # 19 Data Status
         ])
 
     # UTF-8 with BOM so Excel (zh-CN / Windows) opens Chinese fields correctly.
