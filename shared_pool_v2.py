@@ -1490,18 +1490,27 @@ def quote_export():
     writer.writerow(headers)
 
     for idx, q in enumerate(quotes or [], 1):
-        # Price: 优先 normalized_price + 单位(USD)，否则回退原始 price
+        # Price: 优先 normalized_price + 单位(USD)，去掉多余小数点
         norm = q.get("normalized_price")
         if norm is not None and str(norm).strip() != "":
-            price_cell = f"{norm} {q.get('normalized_currency') or 'USD'}"
+            price_val = float(norm)
+            # 整数不显示 .0，真正有小数才保留
+            price_display = str(int(price_val)) if price_val == int(price_val) else f"{price_val:g}"
+            price_cell = f"{price_display} {q.get('normalized_currency') or 'USD'}"
         else:
             price_cell = safe_str(q.get("price"))
         # Link: domain 已是 canonical 标准化后的真实域名
-        link_cell = safe_str(q.get("domain"))
+        # 异常域名前缀标注 data_status
+        link_raw = safe_str(q.get("domain"))
+        ds = q.get("data_status") or ""
+        if ds and ds != "READY":
+            link_cell = f"[{ds}] {link_raw}"
+        else:
+            link_cell = link_raw
         writer.writerow([
             idx,                                          # 0  #
-            link_cell,                                    # 1  Link
-            price_cell,                                   # 2  Price (e.g. "100 USD" or fallback raw)
+            link_cell,                                    # 1  Link (异常域名带 [NEED_DOMAIN] 前缀)
+            price_cell,                                   # 2  Price (e.g. "100 USD" 无小数点)
             safe_str(q.get("price_type") or q.get("site_category") or q.get("niche")),   # 3  Backlink Type
             safe_str(q.get("dr") or q.get("traffic")),     # 4  DR
             safe_str(q.get("da")),                         # 5  DA
@@ -1511,7 +1520,7 @@ def quote_export():
             safe_str(q.get("keywords")),                   # 9  Keywords
             safe_str(q.get("categories")),                 # 10 Categories
             safe_str(q.get("languages")),                  # 11 Languages
-            safe_str(q.get("tat")),                        # 12 TAT
+            safe_str(q.get("tat")) or "",                  # 12 TAT (空则显示空，不漏到下一列)
             safe_str(q.get("permanence")),                 # 13 Permanence
             safe_str(q.get("contact_email") or q.get("email")),  # 14 Contact
             safe_str(q.get("cooperation_type")),           # 15 Cooperation
@@ -3333,7 +3342,7 @@ async function loadQuoteTable(){
         <td><input type="checkbox" class="chk-row" onchange="onQuoteCheck(this,${q.quote_id||q.id},${i})"></td>
         <td style="color:var(--muted);font-size:10.5px;text-align:center">${_getGlobalIdx(QUOTE_PAGER.page,limit,i)}</td>
         <td><a href="http://${esc(q.domain)}" target="_blank">${esc(q.domain)}</a></td>
-        <td style="white-space:nowrap">${esc(q.normalized_price ? q.normalized_price + ' ' + (q.normalized_currency || 'USD') : q.price)}</td>
+        <td style="white-space:nowrap">${esc((function(){var n=parseFloat(q.normalized_price);if(!isNaN(n)){var d=n%1===0?String(n):String(n);return d+' '+(q.normalized_currency||'USD')}return q.price||''})())}</td>
         <td>${esc(q.price_type || q.site_category || q.niche || '')}</td>
         <td class="q-col-extra">${esc(q.dr||'')}</td>
         <td class="q-col-extra">${esc(q.da||'')}</td>
