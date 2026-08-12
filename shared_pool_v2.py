@@ -1474,8 +1474,19 @@ def quote_stats():
 @app.route("/api/price/export", methods=["GET"])
 @app.route("/api/quote/export", methods=["GET"])
 def quote_export():
-    """Export quotes as CSV — Jenny template format (without 6 Niche Price columns)."""
+    """Export quotes as CSV — Jenny template format (without 6 Niche Price columns).
+    scope=all (默认) | ready (仅READY) | abnormal (NEED_*)
+
+    """
+    scope = (request.args.get("scope") or "all").lower()
+    filters = {}
+    if scope == "ready":
+        filters["data_status"] = "eq.READY"
+    elif scope == "abnormal":
+        # NEED_DOMAIN / NEED_PRICE / NEED_REVIEW 等任意非 READY
+        filters["data_status"] = "neq.READY"
     quotes = db.select("quote_pool", select="*", limit=10000,
+                       filters=filters,
                        order="discovered_at", ascending=False)
     # Jenny CSV columns (excluding Casino/Finance/Erotic/Dating/CBD/Crypto/Medicine Niche Price)
     # + 8 standard fields as separate columns (cooperation_type/payment/discount/link_rules/
@@ -1531,10 +1542,11 @@ def quote_export():
     csv_bytes = "\ufeff".encode("utf-8") + csv_text.encode("utf-8")
     # mimetype="text/csv" → Flask emits "text/csv; charset=utf-8" (single, clean).
     # The UTF-8 BOM (ef bb bf) at the start is what makes Excel open Chinese correctly.
+    _scope_label = {"ready": "ready_only", "abnormal": "abnormal_only"}.get(scope, "all")
     return Response(
         csv_bytes,
         mimetype="text/csv",
-        headers={"Content-Disposition": "attachment; filename=quote_pool_export.csv"},
+        headers={"Content-Disposition": f"attachment; filename=quote_pool_export_{_scope_label}.csv"},
     )
 
 
@@ -2853,7 +2865,10 @@ tr.selected-row td{background:#e8f4fd}
   <div class="cards" id="quote-cards"></div>
   <script>setTimeout(()=>{try{loadQuoteTable();}catch(e){console.error('preload quote failed',e);}},300);</script>
   <div class="actions">
-    <button class="btn" id="quote-export-btn" onclick="exportQuotes()">Export CSV</button>
+    <span style="font-size:12px;color:var(--muted);margin-right:4px">Export CSV:</span>
+    <button class="btn" onclick="exportQuotes('all')">All</button>
+    <button class="btn" onclick="exportQuotes('ready')">Normal only</button>
+    <button class="btn" onclick="exportQuotes('abnormal')">Abnormal only</button>
     <button class="btn red" id="quote-delete-btn" onclick="deleteSelectedQuotes()" style="display:none">Delete Selected (<span id="quote-sel-count">0</span>)</button>
     <label style="font-size:12px;color:var(--muted)">User</label><input id="q-user" placeholder="your name" style="width:100px" onchange="saveUserName()">
     <label style="font-size:12px;color:var(--muted)">User Filter</label><select id="q-user-filter" onchange="loadQuoteTable()"><option value="">All Users</option></select>
@@ -3782,9 +3797,10 @@ function exportSelectedEmails(){
     }).join('\n');
   _downloadCSV(csv,'selected_emails.csv');
 }
-function exportQuotes(){
-  // If rows are selected → export only selected (Jenny format CSV)
-  // If none selected → export all via backend (same format)
+function exportQuotes(scope){
+  scope = scope || 'all';
+  // If rows are selected → export only selected (Jenny format CSV, ignores scope)
+  // If none selected → export via backend with scope filter (all|ready|abnormal)
   if(QUOTE_SEL.size){
     const rows=[...QUOTE_SEL].sort((a,b)=>a.idx-b.idx);
     const headers=['序号','Link','Price','Backlink Type','DR','DA','Ref. Domains','Traffic','Country','Keywords','Categories','Languages','TAT','Permanence','Contact','Cooperation','Payment','Discount','Link Rules','Status','其他'];
@@ -3798,8 +3814,8 @@ function exportQuotes(){
       }).join('\n');
     _downloadCSV(csv,'selected_quotes_jenny_format.csv');
   } else {
-    // No selection → open backend export-all in new tab
-    window.open('/api/quote/export','_blank');
+    // No selection → open backend export with scope filter
+    window.open('/api/quote/export?scope=' + encodeURIComponent(scope), '_blank');
   }
 }
 async function deleteSelectedQuotes(){
