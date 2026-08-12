@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 shared_pool_exports/
 *.csv
+
+# temp secrets, never commit
+_sr_key.txt
