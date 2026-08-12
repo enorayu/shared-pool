@@ -1484,23 +1484,25 @@ def quote_export():
                "Ref. Domains", "Traffic", "Country", "Keywords",
                "Categories", "Languages", "TAT", "Permanence", "Contact",
                "Cooperation", "Payment", "Discount", "Link Rules", "Status",
-               "Normalized Price", "Currency", "Price Type", "Data Status"]
+               "Data Status"]
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(headers)
 
     for idx, q in enumerate(quotes or [], 1):
-        # Price 主列回填：优先 normalized_price（USD 标准化），否则回退原始 price
+        # Price: 优先 normalized_price + 单位(USD)，否则回退原始 price
         norm = q.get("normalized_price")
-        price_cell = safe_str(norm) if norm is not None and str(norm).strip() != "" else safe_str(q.get("price"))
-        # Link 主列：domain 已是 canonical 标准化后的真实域名
+        if norm is not None and str(norm).strip() != "":
+            price_cell = f"{norm} {q.get('normalized_currency') or 'USD'}"
+        else:
+            price_cell = safe_str(q.get("price"))
+        # Link: domain 已是 canonical 标准化后的真实域名
         link_cell = safe_str(q.get("domain"))
-        # 严格按 headers 顺序一一对应
         writer.writerow([
             idx,                                          # 0  #
             link_cell,                                    # 1  Link
-            price_cell,                                   # 2  Price (normalized USD or fallback raw)
-            safe_str(q.get("site_category") or q.get("niche")),   # 3  Backlink Type
+            price_cell,                                   # 2  Price (e.g. "100 USD" or fallback raw)
+            safe_str(q.get("price_type") or q.get("site_category") or q.get("niche")),   # 3  Backlink Type
             safe_str(q.get("dr") or q.get("traffic")),     # 4  DR
             safe_str(q.get("da")),                         # 5  DA
             safe_str(q.get("ref_domains")),                # 6  Ref. Domains
@@ -1517,10 +1519,7 @@ def quote_export():
             safe_str(q.get("discount")),                   # 17 Discount
             safe_str(q.get("link_rules")),                 # 18 Link Rules
             safe_str(q.get("status")),                     # 19 Status
-            safe_str(norm) if norm is not None and str(norm).strip() != "" else "",  # 20 Normalized Price
-            safe_str(q.get("normalized_currency")),         # 21 Currency
-            safe_str(q.get("price_type")),                 # 22 Price Type
-            safe_str(q.get("data_status")),                # 23 Data Status
+            safe_str(q.get("data_status")),                # 20 Data Status
         ])
 
     # UTF-8 with BOM so Excel (zh-CN / Windows) opens Chinese fields correctly.
@@ -3334,8 +3333,8 @@ async function loadQuoteTable(){
         <td><input type="checkbox" class="chk-row" onchange="onQuoteCheck(this,${q.quote_id||q.id},${i})"></td>
         <td style="color:var(--muted);font-size:10.5px;text-align:center">${_getGlobalIdx(QUOTE_PAGER.page,limit,i)}</td>
         <td><a href="http://${esc(q.domain)}" target="_blank">${esc(q.domain)}</a></td>
-        <td style="white-space:nowrap">${esc(q.price)}</td>
-        <td>${esc(q.site_category||q.niche||'')}</td>
+        <td style="white-space:nowrap">${esc(q.normalized_price ? q.normalized_price + ' ' + (q.normalized_currency || 'USD') : q.price)}</td>
+        <td>${esc(q.price_type || q.site_category || q.niche || '')}</td>
         <td class="q-col-extra">${esc(q.dr||'')}</td>
         <td class="q-col-extra">${esc(q.da||'')}</td>
         <td class="q-col-extra">${esc(q.ref_domains||'')}</td>
