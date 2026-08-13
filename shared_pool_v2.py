@@ -2159,16 +2159,29 @@ def admin_ping():
 
 @app.route("/api/admin/verify-key", methods=["POST"])
 def admin_verify_key():
-    """Verify a given Supabase key by hitting the REST API."""
+    """Verify a given Supabase key by hitting the REST API (GET + PATCH test)."""
     body = request.get_json(silent=True) or {}
     test_key = body.get("key", "")
     if not test_key:
         return jsonify({"status": "error", "message": "no key provided"}), 400
+    hdrs = {"apikey": test_key, "Authorization": f"Bearer {test_key}", "Content-Type": "application/json"}
     try:
-        r = requests.get(
+        # GET test
+        r_get = requests.get(
             f"{SUPABASE_URL}/rest/v1/quote_pool?select=count&limit=1",
-            headers={"apikey": test_key, "Authorization": f"Bearer {test_key}"}, timeout=20)
-        return jsonify({"status": "ok", "http_code": r.status_code, "response": r.text[:300]})
+            headers=hdrs, timeout=20)
+        # PATCH test (try to set normalized_price on first row with null value)
+        r_patch = requests.patch(
+            f"{SUPABASE_URL}/rest/v1/quote_pool?normalized_price=is.null&limit=1",
+            json={"normalized_price": -999.99},
+            headers={**hdrs, "Prefer": "return=minimal"}, timeout=20)
+        return jsonify({
+            "status": "ok",
+            "get_code": r_get.status_code,
+            "get_body": r_get.text[:200],
+            "patch_code": r_patch.status_code,
+            "patch_body": r_patch.text[:300],
+        })
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
