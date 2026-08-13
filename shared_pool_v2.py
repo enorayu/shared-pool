@@ -2205,6 +2205,7 @@ def admin_normalize_prices():
                     plan.append((x["domain"], np_, nc))
         fill_ok = 0
         fail = 0
+        fail_details = []
         for d, np_, nc in plan:
             r = requests.patch(
                 f"{SUPABASE_URL}/rest/v1/quote_pool?domain=eq.{d}",
@@ -2214,13 +2215,17 @@ def admin_normalize_prices():
                 fill_ok += 1
             else:
                 fail += 1
+                fail_details.append({"domain": d, "status": r.status_code, "body": r.text[:200]})
         return jsonify({
             "status": "ok",
             "null_domain_deleted": del_ok,
             "null_domain_total": len(null_ids),
+            "null_rows_raw": str(null_rows)[:500],
             "normalized_filled": fill_ok,
             "normalized_failed": fail,
             "normalized_total": len(plan),
+            "sample_rows": [{"domain": x.get("domain"), "price": str(x.get("price"))[:80]} for x in rows[:5]],
+            "fail_details": fail_details[:5],
         })
     except Exception as e:
         return jsonify({"status": "error", "message": str(e), "traceback": traceback.format_exc()}), 500
