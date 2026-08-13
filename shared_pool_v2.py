@@ -1636,6 +1636,24 @@ def _parse_price_from_content(text: str):
     return None, None
 
 
+def _normalize_price_fields(price_str: str):
+    """
+    从 price 原始文本(如 "$35/post / $20/post" 或 "£120/post / £90/link")
+    提取首个有效金额与货币, 返回 {normalized_price: float|None, normalized_currency: str|None}。
+    供导入流程自动标准化, 避免人工回填。
+    """
+    if not price_str:
+        return {"normalized_price": None, "normalized_currency": None}
+    pval, pcur = _parse_price_from_content(price_str)
+    if pval is None:
+        return {"normalized_price": None, "normalized_currency": None}
+    try:
+        return {"normalized_price": float(pval.replace(",", "")),
+                "normalized_currency": pcur or "USD"}
+    except ValueError:
+        return {"normalized_price": None, "normalized_currency": None}
+
+
 def _extract_quote_fields(text: str):
     """
     从回复正文抽取报价所需的供应商维度字段 (best-effort, 抽不到返回空串)。
@@ -1813,13 +1831,22 @@ def quote_import_a_replies():
             pval, pcur = _parse_price_from_content(reply.get("reply_content", ""))
             price_str = f"{pval} {pcur}".strip() if pval else ""
 
+        # 自动标准化价格 (写 normalized_price / normalized_currency, 无需人工)
+        norm = _normalize_price_fields(price_str)
+
         # 从回复正文抽取供应商维度字段 (niche/country/cooperation_type 等)
         qf = _extract_quote_fields(reply.get("reply_content", ""))
         price_missing = not price_str
 
+        # domain 为空则跳过, 避免脏行 (空 domain 行会在前端显示为空白)
+        domain = (reply.get("domain") or (email.split("@")[-1] if "@" in email else "")).lower()
+        if not domain:
+            skipped += 1
+            continue
+
         batch.append({
             "email": email,
-            "domain": (reply.get("domain") or email.split("@")[-1]).lower(),
+            "domain": domain,
             "supplier": (reply.get("supplier") or "")[:200],
             "contact_email": reply.get("contact_email") or email,
             "niche": qf.get("niche", ""),
@@ -1828,6 +1855,8 @@ def quote_import_a_replies():
             "site_category": "",
             "cooperation_type": qf.get("cooperation_type", ""),
             "price": price_str,
+            "normalized_price": norm["normalized_price"],
+            "normalized_currency": norm["normalized_currency"],
             "link_rules": "",
             "permanence": qf.get("permanence", ""),
             "content": "",
@@ -2046,6 +2075,14 @@ def quote_import():
         domain = (row.get(col_map.get('domain', ''), '') or '').strip().lower()
         if not domain and '@' in email:
             domain = email.split('@')[-1]
+        # domain 仍为空则跳过, 避免脏行
+        if not domain:
+            skipped += 1
+            continue
+
+        # 自动标准化价格
+        raw_price = str(row.get(col_map.get('price', ''), '') or '')[:50]
+        norm = _normalize_price_fields(raw_price)
 
         # Parse priority as int
         priority = 0
@@ -2067,7 +2104,9 @@ def quote_import():
             "dr": (row.get(col_map.get('dr', ''), '') or '')[:50],
             "site_category": (row.get(col_map.get('site_category', ''), '') or '')[:50],
             "cooperation_type": (row.get(col_map.get('cooperation_type', ''), '') or '')[:50],
-            "price": str(row.get(col_map.get('price', ''), '') or '')[:50],
+            "price": raw_price,
+            "normalized_price": norm["normalized_price"],
+            "normalized_currency": norm["normalized_currency"],
             "link_rules": (row.get(col_map.get('link_rules', ''), '') or '')[:200],
             "permanence": (row.get(col_map.get('permanence', ''), '') or '')[:50],
             "content": (row.get(col_map.get('content', ''), '') or '')[:500],
