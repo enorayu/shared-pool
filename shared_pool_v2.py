@@ -2198,13 +2198,9 @@ def admin_normalize_prices():
     if token != (os.environ.get("ADMIN_TOKEN") or "maisui-normalize-2026"):
         return jsonify({"status": "error", "message": "unauthorized"}), 401
 
-    # service_role key (绕过 RLS, 有完整读写权限)
-    SR_KEY = os.environ.get("SUPABASE_SERVICE_KEY") or "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtnaGVha3JwbnBjaHRkdHRob2FiIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NDg2MTkwOCwiZXhwIjoyMTAwNDM3OTA4fQ.vThMMA1ICwgKsAcIPxffpqEDmKoaUmNJZdOmtD_Yk6o"
-    SR_HEADERS = {
-        "apikey": SR_KEY,
-        "Authorization": f"Bearer {SR_KEY}",
-        "Content-Type": "application/json",
-    }
+    # 写操作也用 AUTH_HEADERS (anon key) — RLS policy 已允许 anon UPDATE/DELETE
+    # service_role key 在此项目上 PATCH 返回 401 (原因不明), 改回 anon
+    WRITE_HEADERS = {**AUTH_HEADERS, "Content-Type": "application/json"}
 
     import traceback
     try:
@@ -2220,7 +2216,7 @@ def admin_normalize_prices():
         for i in null_ids:
             r = requests.delete(
                 f"{SUPABASE_URL}/rest/v1/quote_pool?id=eq.{i}",
-                headers=SR_HEADERS, timeout=30)
+                headers=WRITE_HEADERS, timeout=30)
             if r.status_code in (200, 204):
                 del_ok += 1
 
@@ -2247,7 +2243,7 @@ def admin_normalize_prices():
             r = requests.patch(
                 f"{SUPABASE_URL}/rest/v1/quote_pool?domain=eq.{d}",
                 json={"normalized_price": np_, "normalized_currency": nc},
-                headers={**SR_HEADERS, "Prefer": "return=minimal"}, timeout=30)
+                headers={**WRITE_HEADERS, "Prefer": "return=minimal"}, timeout=30)
             if r.status_code in (200, 204):
                 fill_ok += 1
             else:
