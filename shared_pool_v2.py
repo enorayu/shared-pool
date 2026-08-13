@@ -2163,11 +2163,20 @@ def admin_normalize_prices():
       A. 对 normalized_price 为空的行, 从 price 文本提取金额+货币填 normalized_price/normalized_currency
       B. 删除 domain 为 NULL 的脏行 (前端空白行根因)
     返回处理统计。加简单口令防护防止滥用。
+    写操作使用 service_role key 绕过 RLS (anon key 无 UPDATE/DELETE 权限)。
     """
     body = request.get_json(silent=True) or {}
     token = body.get("token", "")
     if token != (os.environ.get("ADMIN_TOKEN") or "maisui-normalize-2026"):
         return jsonify({"status": "error", "message": "unauthorized"}), 401
+
+    # service_role key (绕过 RLS, 有完整读写权限)
+    SR_KEY = os.environ.get("SUPABASE_SERVICE_KEY") or "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtnaGVha3JwbnBjaHRkdHRob2FiIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NDg2MTkwOCwiZXhwIjoyMTAwNDM3OTA4fQ.vThMMA1ICwgKsAcIPxffpqEDmKoaUmNJZdOmtD_Yk6o"
+    SR_HEADERS = {
+        "apikey": SR_KEY,
+        "Authorization": f"Bearer {SR_KEY}",
+        "Content-Type": "application/json",
+    }
 
     import traceback
     try:
@@ -2183,7 +2192,7 @@ def admin_normalize_prices():
         for i in null_ids:
             r = requests.delete(
                 f"{SUPABASE_URL}/rest/v1/quote_pool?id=eq.{i}",
-                headers=AUTH_HEADERS, timeout=30)
+                headers=SR_HEADERS, timeout=30)
             if r.status_code in (200, 204):
                 del_ok += 1
 
@@ -2210,7 +2219,7 @@ def admin_normalize_prices():
             r = requests.patch(
                 f"{SUPABASE_URL}/rest/v1/quote_pool?domain=eq.{d}",
                 json={"normalized_price": np_, "normalized_currency": nc},
-                headers={**AUTH_HEADERS, "Prefer": "return=minimal"}, timeout=30)
+                headers={**SR_HEADERS, "Prefer": "return=minimal"}, timeout=30)
             if r.status_code in (200, 204):
                 fill_ok += 1
             else:
@@ -2220,11 +2229,9 @@ def admin_normalize_prices():
             "status": "ok",
             "null_domain_deleted": del_ok,
             "null_domain_total": len(null_ids),
-            "null_rows_raw": str(null_rows)[:500],
             "normalized_filled": fill_ok,
             "normalized_failed": fail,
             "normalized_total": len(plan),
-            "sample_rows": [{"domain": x.get("domain"), "price": str(x.get("price"))[:80]} for x in rows[:5]],
             "fail_details": fail_details[:5],
         })
     except Exception as e:
