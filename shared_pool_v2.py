@@ -2186,17 +2186,24 @@ def admin_clean_empty():
         unique_empty = []
         for row in empty_rows + results:
             rid = row.get("id")
-            if rid and rid not in seen:
-                seen.add(rid)
+            key = rid if rid is not None else f"domain:{repr(row.get('domain'))}"
+            if key not in seen:
+                seen.add(key)
                 unique_empty.append(row)
-        # 删除
+        # 删除: 有 id 用 id, 无 id 用 domain=eq.(空串) 或 id=is.null
         del_ok = 0
         del_fail = 0
         for row in unique_empty:
             rid = row.get("id")
-            dr = requests.delete(
-                f"{SUPABASE_URL}/rest/v1/quote_pool?id=eq.{rid}",
-                headers=WRITE_HEADERS, timeout=30)
+            if rid is not None:
+                dr = requests.delete(
+                    f"{SUPABASE_URL}/rest/v1/quote_pool?id=eq.{rid}",
+                    headers=WRITE_HEADERS, timeout=30)
+            else:
+                # id 为空/NULL 的脏行, 用 domain 空串条件删除
+                dr = requests.delete(
+                    f"{SUPABASE_URL}/rest/v1/quote_pool?domain=eq.",
+                    headers=WRITE_HEADERS, timeout=30)
             if dr.status_code in (200, 204):
                 del_ok += 1
             else:
