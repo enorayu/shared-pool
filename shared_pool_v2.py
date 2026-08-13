@@ -2157,6 +2157,61 @@ def admin_ping():
     """Deploy test endpoint."""
     return jsonify({"status": "ok", "supabase_url": SUPABASE_URL})
 
+@app.route("/api/admin/clean-empty", methods=["POST"])
+def admin_clean_empty():
+    """删除 domain 为空/NULL/纯空白 的脏行, 返回详情."""
+    body = request.get_json(silent=True) or {}
+    token = body.get("token", "")
+    if token != (os.environ.get("ADMIN_TOKEN") or "maisui-normalize-2026"):
+        return jsonify({"status": "error", "message": "unauthorized"}), 401
+    try:
+        WRITE_HEADERS = {**AUTH_HEADERS, "Content-Type": "application/json"}
+        # 查所有 domain 为空或 NULL 的行
+        results = []
+        for filt in ["domain=is.null", "domain=eq.", "domain=eq. "]:
+            r = requests.get(
+                f"{SUPABASE_URL}/rest/v1/quote_pool?select=id,domain,price&{filt}",
+                headers=AUTH_HEADERS, timeout=30)
+            if r.status_code == 200:
+                rows = r.json() if isinstance(r.json(), list) else []
+                results.extend(rows)
+        # 也查 domain 为空字符串的
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/quote_pool?select=id,domain,price",
+            headers=AUTH_HEADERS, timeout=30)
+        all_rows = r.json() if (r.status_code == 200 and isinstance(r.json(), list)) else []
+        empty_rows = [x for x in all_rows if isinstance(x, dict) and not x.get("domain", "") or not str(x.get("domain", "")).strip()]
+        # 合并去重
+        seen = set()
+        unique_empty = []
+        for row in empty_rows + results:
+            rid = row.get("id")
+            if rid and rid not in seen:
+                seen.add(rid)
+                unique_empty.append(row)
+        # 删除
+        del_ok = 0
+        del_fail = 0
+        for row in unique_empty:
+            rid = row.get("id")
+            dr = requests.delete(
+                f"{SUPABASE_URL}/rest/v1/quote_pool?id=eq.{rid}",
+                headers=WRITE_HEADERS, timeout=30)
+            if dr.status_code in (200, 204):
+                del_ok += 1
+            else:
+                del_fail += 1
+        return jsonify({
+            "status": "ok",
+            "found_empty": len(unique_empty),
+            "deleted": del_ok,
+            "failed": del_fail,
+            "sample": [{"id": r.get("id"), "domain": repr(r.get("domain")), "price": repr(r.get("price"))} for r in unique_empty[:5]],
+        })
+    except Exception as e:
+        import traceback
+        return jsonify({"status": "error", "message": str(e), "traceback": traceback.format_exc()}), 500
+
 @app.route("/api/admin/verify-key", methods=["POST"])
 def admin_verify_key():
     """Verify a given Supabase key by hitting the REST API (GET + PATCH test)."""
