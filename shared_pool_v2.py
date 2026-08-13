@@ -2157,6 +2157,21 @@ def admin_ping():
     """Deploy test endpoint."""
     return jsonify({"status": "ok", "supabase_url": SUPABASE_URL})
 
+@app.route("/api/admin/verify-key", methods=["POST"])
+def admin_verify_key():
+    """Verify a given Supabase key by hitting the REST API."""
+    body = request.get_json(silent=True) or {}
+    test_key = body.get("key", "")
+    if not test_key:
+        return jsonify({"status": "error", "message": "no key provided"}), 400
+    try:
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/quote_pool?select=count&limit=1",
+            headers={"apikey": test_key, "Authorization": f"Bearer {test_key}"}, timeout=20)
+        return jsonify({"status": "ok", "http_code": r.status_code, "response": r.text[:300]})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 @app.route("/api/admin/normalize-prices", methods=["POST"])
 def admin_normalize_prices():
     """一次性存量修复 (在 Render/后端环境执行, 绕过沙箱对 supabase.co 的屏蔽):
