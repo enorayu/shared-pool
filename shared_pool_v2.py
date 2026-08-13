@@ -2233,7 +2233,9 @@ def admin_normalize_prices():
                 continue
             p = x.get("price")
             if p not in (None, "") and str(p).strip() != "":
-                np_, nc = _normalize_price_fields(str(p))
+                result = _normalize_price_fields(str(p))
+                np_ = result.get("normalized_price")
+                nc = result.get("normalized_currency")
                 if np_ is not None:
                     plan.append((x["domain"], np_, nc))
         fill_ok = 0
