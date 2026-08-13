@@ -2152,6 +2152,11 @@ def admin_clear_cache():
     return jsonify({"status": "ok", "message": "All caches cleared"})
 
 
+@app.route("/api/admin/ping", methods=["GET", "POST"])
+def admin_ping():
+    """Deploy test endpoint."""
+    return jsonify({"status": "ok", "supabase_url": SUPABASE_URL})
+
 @app.route("/api/admin/normalize-prices", methods=["POST"])
 def admin_normalize_prices():
     """一次性存量修复 (在 Render/后端环境执行, 绕过沙箱对 supabase.co 的屏蔽):
