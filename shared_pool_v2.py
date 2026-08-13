@@ -2172,10 +2172,13 @@ def admin_normalize_prices():
     import traceback
     try:
         # B. 删空 domain 脏行
-        null_rows = requests.get(
-            f"{SUPABASE_URL}/rest/v1/quote_pool?select=id&domain=is.null",
-            headers=AUTH_HEADERS, timeout=30).json()
-        null_ids = [r["id"] for r in null_rows if r.get("domain") is None]
+        null_resp = requests.get(
+            f"{SUPABASE_URL}/rest/v1/quote_pool?select=id,domain&domain=is.null",
+            headers=AUTH_HEADERS, timeout=30)
+        null_rows = null_resp.json() if null_resp.status_code == 200 else []
+        if not isinstance(null_rows, list):
+            null_rows = []
+        null_ids = [r["id"] for r in null_rows if isinstance(r, dict) and r.get("domain") is None]
         del_ok = 0
         for i in null_ids:
             r = requests.delete(
@@ -2185,11 +2188,16 @@ def admin_normalize_prices():
                 del_ok += 1
 
         # A. 标准化 normalized_price 为空的行
-        rows = requests.get(
+        price_resp = requests.get(
             f"{SUPABASE_URL}/rest/v1/quote_pool?select=domain,price,normalized_price&normalized_price=is.null&limit=1000",
-            headers=AUTH_HEADERS, timeout=30).json()
+            headers=AUTH_HEADERS, timeout=30)
+        rows = price_resp.json() if price_resp.status_code == 200 else []
+        if not isinstance(rows, list):
+            rows = []
         plan = []
         for x in rows:
+            if not isinstance(x, dict):
+                continue
             p = x.get("price")
             if p not in (None, "") and str(p).strip() != "":
                 np_, nc = _normalize_price_fields(str(p))
