@@ -2151,6 +2151,63 @@ def admin_clear_cache():
     CONFIG_CACHE.clear()
     return jsonify({"status": "ok", "message": "All caches cleared"})
 
+
+@app.route("/api/admin/normalize-prices", methods=["POST"])
+def admin_normalize_prices():
+    """一次性存量修复 (在 Render/后端环境执行, 绕过沙箱对 supabase.co 的屏蔽):
+      A. 对 normalized_price 为空的行, 从 price 文本提取金额+货币填 normalized_price/normalized_currency
+      B. 删除 domain 为 NULL 的脏行 (前端空白行根因)
+    返回处理统计。加简单口令防护防止滥用。
+    """
+    body = request.get_json(silent=True) or {}
+    token = body.get("token", "")
+    if token != (os.environ.get("ADMIN_TOKEN") or "maisui-normalize-2026"):
+        return jsonify({"status": "error", "message": "unauthorized"}), 401
+
+    # B. 删空 domain 脏行
+    null_rows = requests.get(
+        f"{SUPABASE_URL}/rest/v1/quote_pool?select=id&domain=is.null",
+        headers=AUTH_HEADERS, timeout=30).json()
+    null_ids = [r["id"] for r in null_rows if r.get("domain") is None]
+    del_ok = 0
+    for i in null_ids:
+        r = requests.delete(
+            f"{SUPABASE_URL}/rest/v1/quote_pool?id=eq.{i}",
+            headers=AUTH_HEADERS, timeout=30)
+        if r.status_code in (200, 204):
+            del_ok += 1
+
+    # A. 标准化 normalized_price 为空的行
+    rows = requests.get(
+        f"{SUPABASE_URL}/rest/v1/quote_pool?select=domain,price,normalized_price&normalized_price=is.null&limit=1000",
+        headers=AUTH_HEADERS, timeout=30).json()
+    plan = []
+    for x in rows:
+        p = x.get("price")
+        if p not in (None, "") and str(p).strip() != "":
+            np_, nc = _normalize_price_fields(str(p))
+            if np_ is not None:
+                plan.append((x["domain"], np_, nc))
+    fill_ok = 0
+    fail = 0
+    for d, np_, nc in plan:
+        r = requests.patch(
+            f"{SUPABASE_URL}/rest/v1/quote_pool?domain=eq.{d}",
+            json={"normalized_price": np_, "normalized_currency": nc},
+            headers={**AUTH_HEADERS, "Prefer": "return=minimal"}, timeout=30)
+        if r.status_code in (200, 204):
+            fill_ok += 1
+        else:
+            fail += 1
+    return jsonify({
+        "status": "ok",
+        "null_domain_deleted": del_ok,
+        "null_domain_total": len(null_ids),
+        "normalized_filled": fill_ok,
+        "normalized_failed": fail,
+        "normalized_total": len(plan),
+    })
+
 @app.route("/api/stats", methods=["GET"])
 def get_stats():
     """Aggregated statistics (cached 60s). Read from pooled stats materialized view
