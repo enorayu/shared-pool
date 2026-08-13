@@ -2219,6 +2219,43 @@ def admin_clean_empty():
         import traceback
         return jsonify({"status": "error", "message": str(e), "traceback": traceback.format_exc()}), 500
 
+@app.route("/api/admin/delete-blank-row", methods=["POST"])
+def admin_delete_blank_row():
+    """专门删除 id 为 NULL / domain 为空串 的脏行."""
+    body = request.get_json(silent=True) or {}
+    token = body.get("token", "")
+    if token != (os.environ.get("ADMIN_TOKEN") or "maisui-normalize-2026"):
+        return jsonify({"status": "error", "message": "unauthorized"}), 401
+    try:
+        WRITE_HEADERS = {**AUTH_HEADERS, "Content-Type": "application/json"}
+        # 1. 先用 id=is.null 删
+        r1 = requests.delete(
+            f"{SUPABASE_URL}/rest/v1/quote_pool?id=is.null",
+            headers=WRITE_HEADERS, timeout=30)
+        del1 = r1.status_code in (200, 204)
+        # 2. 再用 domain=eq. 删（空字符串）
+        r2 = requests.delete(
+            f"{SUPABASE_URL}/rest/v1/quote_pool?domain=eq.",
+            headers=WRITE_HEADERS, timeout=30)
+        del2 = r2.status_code in (200, 204)
+        # 3. 也试 domain is null
+        r3 = requests.delete(
+            f"{SUPABASE_URL}/rest/v1/quote_pool?domain=is.null",
+            headers=WRITE_HEADERS, timeout=30)
+        del3 = r3.status_code in (200, 204)
+        return jsonify({
+            "status": "ok",
+            "id_null_deleted": del1,
+            "id_null_code": r1.status_code,
+            "domain_empty_deleted": del2,
+            "domain_empty_code": r2.status_code,
+            "domain_null_deleted": del3,
+            "domain_null_code": r3.status_code,
+        })
+    except Exception as e:
+        import traceback
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 @app.route("/api/admin/verify-key", methods=["POST"])
 def admin_verify_key():
     """Verify a given Supabase key by hitting the REST API (GET + PATCH test)."""
