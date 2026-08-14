@@ -2284,6 +2284,25 @@ def admin_verify_key():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
+
+@app.route("/api/admin/raw-count", methods=["GET"])
+def admin_raw_count():
+    """直接用 service_role key 打各表真实 count，绕过前端 db 封装。"""
+    SR_KEY = os.environ.get("SUPABASE_SERVICE_KEY") or "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtnaGVha3JwbnBjaHRkdHRob2FiIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NDg2MTkwOCwiZXhwIjoyMTAwNDM3OTA4fQ.vThMMA1ICwgKsAcIPxffpqEDmKoaUmNJZdOmtD_Yk6o"
+    hdrs = {"apikey": SR_KEY, "Authorization": f"Bearer {SR_KEY}"}
+    tables = ["domain_pool", "supplier_pool", "quote_pool", "reply_pool",
+              "email_pool", "operation_log", "config"]
+    out = {}
+    for t in tables:
+        try:
+            r = requests.get(
+                f"{SUPABASE_URL}/rest/v1/{t}?select=count",
+                headers=hdrs, timeout=20)
+            out[t] = {"code": r.status_code, "body": r.text[:150]}
+        except Exception as e:
+            out[t] = {"code": "ERR", "body": str(e)[:100]}
+    return jsonify(out)
+
 @app.route("/api/admin/normalize-prices", methods=["POST"])
 def admin_normalize_prices():
     """一次性存量修复 (在 Render/后端环境执行, 绕过沙箱对 supabase.co 的屏蔽):
