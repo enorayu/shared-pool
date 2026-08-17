@@ -2289,9 +2289,10 @@ def admin_verify_key():
 def admin_raw_count():
     """直接用 service_role key 打各表真实 count，绕过前端 db 封装。"""
     SR_KEY = (
-        os.environ.get("SUPABASE_SERVICE_KEY")
+        SUPABASE_ANON_KEY  # from config.py (authoritative, can be rotated)
+        or os.environ.get("SUPABASE_SERVICE_KEY")
         or os.environ.get("SUPABASE_ANON_KEY")
-        or SUPABASE_ANON_KEY  # from config.py (current effective key)
+        or ""  # last resort; will fail downstream
     )
     hdrs = {"apikey": SR_KEY, "Authorization": f"Bearer {SR_KEY}"}
     tables = ["domain_pool", "supplier_pool", "quote_pool", "reply_pool",
@@ -2638,9 +2639,10 @@ def log_list():
     #    Cursor-paginate over op_time DESC so we always retrieve the FULL log set.
     try:
         SR_KEY = (
-            os.environ.get("SUPABASE_SERVICE_KEY")
+            SUPABASE_ANON_KEY  # from config.py (authoritative, can be rotated)
+            or os.environ.get("SUPABASE_SERVICE_KEY")
             or os.environ.get("SUPABASE_ANON_KEY")
-            or SUPABASE_ANON_KEY  # from config.py (current effective key)
+            or ""  # last resort; will fail downstream
         )
         SR_HEADERS = {"apikey": SR_KEY, "Authorization": f"Bearer {SR_KEY}"}
         fetched = 0
