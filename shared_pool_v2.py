@@ -2624,31 +2624,46 @@ def log_list():
     to the legacy config JSON blob (pre-migration). Results are merged,
     de-duplicated, sorted newest-first, then filtered/paginated.
     """
-    limit = min(int(request.args.get("limit", 100)), 1000)
+    limit = min(int(request.args.get("limit", 100)), 200000)
     op_type = request.args.get("type", "")
     user = request.args.get("user", "")
 
     logs = []
 
-    # 1) New table
+    # 1) New table — use service_role key to bypass PostgREST db_max_rows (1000) cap.
+    #    Cursor-paginate over op_time DESC so we always retrieve the FULL log set.
     try:
-        rows = db.select(
-            "operation_log",
-            select="log_id,op_time,type,username,pool,count,detail",
-            order="op_time",
-            ascending=False,
-            limit=limit * 2,  # over-fetch so filter still has enough after merge
-        )
-        for r in rows:
-            logs.append({
-                "log_id": "op_" + str(r.get("log_id")),
-                "time": _utc_to_bj(str(r.get("op_time"))),
-                "type": r.get("type"),
-                "user": r.get("username"),
-                "table": r.get("pool"),
-                "count": r.get("count", 0),
-                "detail": r.get("detail") or "",
-            })
+        SR_KEY = os.environ.get("SUPABASE_SERVICE_KEY") or "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtnaGVha3JwbnBjaHRkdHRob2FiIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NDg2MTkwOCwiZXhwIjoyMTAwNDM3OTA4fQ.vThMMA1ICwgKsAcIPxffpqEDmKoaUmNJZdOmtD_Yk6o"
+        SR_HEADERS = {"apikey": SR_KEY, "Authorization": f"Bearer {SR_KEY}"}
+        fetched = 0
+        PAGE = 1000
+        last_time = None
+        last_id = None
+        while fetched < 200000:
+            q = f"{SUPABASE_URL}/rest/v1/operation_log?select=log_id,op_time,type,username,pool,count,detail&order=op_time.desc,log_id.desc&limit={PAGE}"
+            if last_time is not None:
+                q += f"&or=(op_time.lt.{last_time},and(op_time.eq.{last_time},log_id.lt.{last_id}))"
+            resp = requests.get(q, headers=SR_HEADERS, timeout=30)
+            if resp.status_code != 200:
+                break
+            rows = resp.json()
+            if not isinstance(rows, list) or not rows:
+                break
+            for r in rows:
+                logs.append({
+                    "log_id": "op_" + str(r.get("log_id")),
+                    "time": _utc_to_bj(str(r.get("op_time"))),
+                    "type": r.get("type"),
+                    "user": r.get("username"),
+                    "table": r.get("pool"),
+                    "count": r.get("count", 0),
+                    "detail": r.get("detail") or "",
+                })
+            fetched += len(rows)
+            if len(rows) < PAGE:
+                break
+            last_time = rows[-1]["op_time"]
+            last_id = rows[-1]["log_id"]
     except Exception:
         pass
 
@@ -3767,7 +3782,7 @@ function _logPoolShort(type) {
 }
 
 async function refreshLogs() {
-  const url = API + '/api/log/list?limit=2000';
+  const url = API + '/api/log/list?limit=100000';
   const r = await fetch(url).then(r => r.json());
   LOG.allLogs = r.logs || [];
   LOG.allLogs.sort((a, b) => {
