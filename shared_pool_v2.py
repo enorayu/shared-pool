@@ -2288,7 +2288,11 @@ def admin_verify_key():
 @app.route("/api/admin/raw-count", methods=["GET"])
 def admin_raw_count():
     """直接用 service_role key 打各表真实 count，绕过前端 db 封装。"""
-    SR_KEY = os.environ.get("SUPABASE_SERVICE_KEY") or "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtnaGVha3JwbnBjaHRkdHRob2FiIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NDg2MTkwOCwiZXhwIjoyMTAwNDM3OTA4fQ.vThMMA1ICwgKsAcIPxffpqEDmKoaUmNJZdOmtD_Yk6o"
+    SR_KEY = (
+        os.environ.get("SUPABASE_SERVICE_KEY")
+        or os.environ.get("SUPABASE_ANON_KEY")
+        or SUPABASE_ANON_KEY  # from config.py (current effective key)
+    )
     hdrs = {"apikey": SR_KEY, "Authorization": f"Bearer {SR_KEY}"}
     tables = ["domain_pool", "supplier_pool", "quote_pool", "reply_pool",
               "email_pool", "operation_log", "config"]
@@ -2633,16 +2637,21 @@ def log_list():
     # 1) New table — use service_role key to bypass PostgREST db_max_rows (1000) cap.
     #    Cursor-paginate over op_time DESC so we always retrieve the FULL log set.
     try:
-        SR_KEY = os.environ.get("SUPABASE_SERVICE_KEY") or "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtnaGVha3JwbnBjaHRkdHRob2FiIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NDg2MTkwOCwiZXhwIjoyMTAwNDM3OTA4fQ.vThMMA1ICwgKsAcIPxffpqEDmKoaUmNJZdOmtD_Yk6o"
+        SR_KEY = (
+            os.environ.get("SUPABASE_SERVICE_KEY")
+            or os.environ.get("SUPABASE_ANON_KEY")
+            or SUPABASE_ANON_KEY  # from config.py (current effective key)
+        )
         SR_HEADERS = {"apikey": SR_KEY, "Authorization": f"Bearer {SR_KEY}"}
         fetched = 0
         PAGE = 1000
-        last_time = None
         last_id = None
         while fetched < 200000:
-            q = f"{SUPABASE_URL}/rest/v1/operation_log?select=log_id,op_time,type,username,pool,count,detail&order=op_time.desc,log_id.desc&limit={PAGE}"
-            if last_time is not None:
-                q += f"&or=(op_time.lt.{last_time},and(op_time.eq.{last_time},log_id.lt.{last_id}))"
+            # Cursor pagination on log_id (int serial, stable) — avoids PostgREST tz-string
+            # comparison bugs on op_time (old rows stored as "2026-... 00:00" with a space).
+            q = f"{SUPABASE_URL}/rest/v1/operation_log?select=log_id,op_time,type,username,pool,count,detail&order=log_id.desc&limit={PAGE}"
+            if last_id is not None:
+                q += f"&log_id=lt.{last_id}"
             resp = requests.get(q, headers=SR_HEADERS, timeout=30)
             if resp.status_code != 200:
                 break
@@ -2662,7 +2671,6 @@ def log_list():
             fetched += len(rows)
             if len(rows) < PAGE:
                 break
-            last_time = rows[-1]["op_time"]
             last_id = rows[-1]["log_id"]
     except Exception:
         pass
