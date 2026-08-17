@@ -1763,12 +1763,14 @@ def quote_import_a_replies():
             break
         page += 1
 
-    # Get existing quote emails
-    existing_emails = set()
+    # Get existing (email, domain, price) triples for dedup.
+    # Same email+domain with DIFFERENT price = distinct quote (keep both).
+    # Same email+domain+price = true duplicate (skip).
+    existing_keys = set()
     page = 0
     while True:
         resp = requests.get(
-            f"{SUPABASE_URL}/rest/v1/quote_pool?select=email&limit={page_size}&offset={page*page_size}",
+            f"{SUPABASE_URL}/rest/v1/quote_pool?select=email,domain,price&limit={page_size}&offset={page*page_size}",
             headers=AUTH_HEADERS,
             timeout=30
         )
@@ -1778,8 +1780,11 @@ def quote_import_a_replies():
         if not data:
             break
         for r in data:
-            if r.get("email"):
-                existing_emails.add(r["email"].lower())
+            e = (r.get("email") or "").lower()
+            d = (r.get("domain") or "").lower()
+            p = (r.get("price") or "").strip().lower()
+            if e:
+                existing_keys.add(f"{e}|{d}|{p}")
         if len(data) < page_size:
             break
         page += 1
@@ -1813,10 +1818,6 @@ def quote_import_a_replies():
         email = (reply.get("email") or "").lower()
         if not email:
             continue
-        if not force and email in existing_emails:
-            skipped += 1
-            continue
-        existing_emails.add(email)
 
         # 价格优先从 reply_pool.notes 里的 v2_price:$XX 标签取 (来自原始回信 Excel, 避免丢价)
         # 其次从回复正文解析 (修复: 进 quote pool 的 A类应有价格)
@@ -1843,6 +1844,14 @@ def quote_import_a_replies():
         if not domain:
             skipped += 1
             continue
+
+        # Dedup on (email, domain, price) triple — same email+domain with a
+        # DIFFERENT price is a distinct quote and must be kept.
+        dedup_key = f"{email}|{domain}|{price_str.strip().lower()}"
+        if not force and dedup_key in existing_keys:
+            skipped += 1
+            continue
+        existing_keys.add(dedup_key)
 
         batch.append({
             "email": email,
@@ -2014,13 +2023,14 @@ def quote_import():
         if mapped:
             col_map[mapped] = col
 
-    # Get existing emails for dedup
+    # Get existing (email, domain, price) triples for dedup.
+    # Same email+domain with DIFFERENT price = distinct quote (keep both).
     existing = set()
     try:
         page, page_size = 0, 1000
         while True:
             resp = requests.get(
-                f"{SUPABASE_URL}/rest/v1/quote_pool?select=email&limit={page_size}&offset={page*page_size}",
+                f"{SUPABASE_URL}/rest/v1/quote_pool?select=email,domain,price&limit={page_size}&offset={page*page_size}",
                 headers=AUTH_HEADERS,
                 timeout=30
             )
@@ -2030,8 +2040,11 @@ def quote_import():
             if not data:
                 break
             for r in data:
-                if r.get('email'):
-                    existing.add(r['email'].lower())
+                e = (r.get('email') or '').lower()
+                d = (r.get('domain') or '').lower()
+                p = (r.get('price') or '').strip().lower()
+                if e:
+                    existing.add(f"{e}|{d}|{p}")
             if len(data) < page_size:
                 break
             page += 1
@@ -2067,10 +2080,6 @@ def quote_import():
         email = (row.get(col_map.get('email', ''), '') or '').strip().lower()
         if not email:
             continue
-        if email in existing:
-            skipped += 1
-            continue
-        existing.add(email)
 
         domain = (row.get(col_map.get('domain', ''), '') or '').strip().lower()
         if not domain and '@' in email:
@@ -2080,8 +2089,18 @@ def quote_import():
             skipped += 1
             continue
 
+        # price used for dedup triple (email, domain, price) — normalized form
+        raw_price = str(row.get(col_map.get('price', ''), '') or '').strip().lower()[:50]
+
+        # Dedup on (email, domain, price) triple — same email+domain with a
+        # DIFFERENT price is a distinct quote and must be kept.
+        dedup_key = f"{email}|{domain}|{raw_price}"
+        if dedup_key in existing:
+            skipped += 1
+            continue
+        existing.add(dedup_key)
+
         # 自动标准化价格
-        raw_price = str(row.get(col_map.get('price', ''), '') or '')[:50]
         norm = _normalize_price_fields(raw_price)
 
         # Parse priority as int
