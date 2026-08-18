@@ -3371,15 +3371,10 @@ function saveUserName(){
     }
   }
 }
-// Load saved user name on page load
-(function(){
-  const saved=localStorage.getItem('shared_pool_user');
-  if(saved){
-    ['d-user','e-user','r-user','q-user'].forEach(id=>{
-      const el=document.getElementById(id); if(el) el.value=saved;
-    });
-  }
-})();
+// NOTE: 不再在页面加载时把 localStorage 自动灌入输入框。
+// 旧逻辑会让上一个用户(如 leo)的名字残留预填，导致下一个用户未手动修改时
+// getUserName() 取到残留名、日志/claimed_by 误记成 leo。
+// 现在输入框默认空，谁操作谁必须自己填；saveUserName() 仍会记住手动填写的名字。
 
 // ── Import panel ──
 function toggleImport(){
