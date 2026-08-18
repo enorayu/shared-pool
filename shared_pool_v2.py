@@ -2176,6 +2176,32 @@ def admin_ping():
     """Deploy test endpoint."""
     return jsonify({"status": "ok", "supabase_url": SUPABASE_URL})
 
+
+@app.route("/api/admin/refresh-mv", methods=["POST"])
+def admin_refresh_mv():
+    """Trigger REFRESH MATERIALIZED VIEW pool_stats_mv via Supabase RPC.
+
+    面板 /api/stats 读 pool_stats_mv 物化视图, 该视图不会自动随
+    email_pool 等表 UPDATE 刷新。改完状态后调此端点即可让面板数字同步,
+    无需手动进 Supabase SQL Editor。
+    前置: 需在 Supabase SQL Editor 执行 create_refresh_mv_fn.sql 建好 RPC。
+    """
+    try:
+        resp = requests.post(
+            f"{SUPABASE_URL}/rest/v1/rpc/refresh_pool_stats_mv",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            json={},
+            timeout=30,
+        )
+        if resp.status_code in (200, 201, 204):
+            # 清本地内存缓存, 强制下次 /api/stats 重读物化视图
+            global _cache
+            _cache.clear()
+            return jsonify({"status": "ok", "message": "pool_stats_mv refresh triggered"})
+        return jsonify({"status": "error", "code": resp.status_code, "detail": resp.text[:500]}), 502
+    except Exception as e:
+        return jsonify({"status": "error", "detail": str(e)}), 500
+
 @app.route("/api/admin/clean-empty", methods=["POST"])
 def admin_clean_empty():
     """删除 domain 为空/NULL/纯空白 的脏行, 返回详情."""
