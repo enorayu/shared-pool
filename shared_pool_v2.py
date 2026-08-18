@@ -1734,6 +1734,196 @@ def _extract_quote_fields(text: str):
     return out
 
 
+# ----------------------------------------------------------------------------
+# 方案A: 一封回信 -> 多个报价块(按价格信号切), 每块生成独立 quote 行。
+# 不动表结构, 复用现有列 (cooperation_type / categories / languages / price 等)。
+# 以下函数来自 staging 验证 (quote_block_parser.py), 已修价格尾部句点 "100." -> "100"。
+# ----------------------------------------------------------------------------
+_CUR_MAP_BLOCK = {"$": "USD", "€": "EUR", "£": "GBP", "₹": "INR", "¥": "CNY"}
+
+_BLOCK_COOP_MAP = [
+    ("guest post", "Guest Post"), ("guestpost", "Guest Post"),
+    ("sponsored", "Sponsored Post"), ("sponsor", "Sponsored Post"),
+    ("link insert", "Link Insert"), ("niche edit", "Link Insert"),
+    ("backlink", "Backlink"), ("permanent", "Permanent Link"),
+    ("homepage", "Homepage Link"), ("sidebar", "Sidebar Link"),
+    ("article", "Article"), ("blog post", "Guest Post"),
+    ("软文", "Guest Post"), ("客座", "Guest Post"), ("友链", "Backlink"),
+    ("首页链接", "Homepage Link"), ("外链", "Backlink"),
+]
+_BLOCK_CATEGORY_MAP = [
+    ("casino", "Casino"), ("gambling", "Gambling"), ("crypto", "Crypto"),
+    ("forex", "Forex"), ("cbd", "CBD"), ("adult", "Adult"), ("dating", "Dating"),
+    ("fashion", "Fashion"), ("beauty", "Beauty"), ("travel", "Travel"),
+    ("health", "Health"), ("finance", "Finance"), ("tech", "Tech"),
+    ("game", "Gaming"), ("gaming", "Gaming"), ("real estate", "Real Estate"),
+]
+_BLOCK_LANG_MAP = [
+    ("english", "en"), ("eng", "en"), ("en site", "en"),
+    ("french", "fr"), ("français", "fr"), ("fr site", "fr"),
+    ("spanish", "es"), ("español", "es"), ("es site", "es"),
+    ("german", "de"), ("deutsch", "de"),
+    ("italian", "it"), ("portuguese", "pt"), ("russian", "ru"),
+]
+_BLOCK_COUNTRY_MAP = [
+    ("usa", "US"), ("united states", "US"), ("u.s.", "US"), ("america", "US"),
+    ("uk", "UK"), ("united kingdom", "UK"), ("britain", "UK"), ("england", "UK"),
+    ("germany", "DE"), ("france", "FR"), ("italy", "IT"), ("spain", "ES"),
+    ("india", "IN"), ("canada", "CA"), ("australia", "AU"), ("china", "CN"),
+]
+
+
+def _block_clean_num(s):
+    # 欧式小数: 212,00 -> 212.00 ; 但 1,234 (千分位) 也去逗号
+    # 规则: 若逗号后恰好2位且整体像小数(无更多逗号), 当小数; 否则去逗号当整数
+    s = s.strip()
+    s = _re.sub(r"\.$", "", s)  # 去尾部句点 "100." -> "100"
+    if "," in s:
+        parts = s.split(",")
+        if len(parts) == 2 and len(parts[1]) == 2 and parts[1].isdigit():
+            s = parts[0] + "." + parts[1]  # 欧式小数 212,00 -> 212.00
+        else:
+            s = s.replace(",", "")  # 千分位 1,234 -> 1234
+    try:
+        v = float(s)
+    except ValueError:
+        return None
+    if v <= 0:
+        return None
+    if 1900 <= v <= 2099:
+        return None
+    if v > 100000:
+        return None
+    return s
+
+
+def _block_parse_price(block: str):
+    """从单个报价块取首个有效金额+货币。返回 (price_str, currency) 或 (None, None)。"""
+    if not block:
+        return None, None
+    low = block.lower()
+    m = _re.search(r"([$€£₹¥])\s?\d[\d,]*\.?\d*", block)
+    if m:
+        sym = m.group(1)
+        num = _block_clean_num(_re.sub(r"[^\d.,]", "", m.group(0)))
+        if num:
+            return num, _CUR_MAP_BLOCK.get(sym, "USD")
+    m = _re.search(r"\b(\d[\d,]*\.?\d*)\s*(usd|eur|gbp|inr|cny|euros?|dollars?|bucks|rs)\b", low)
+    if m:
+        num = _block_clean_num(m.group(1))
+        if num:
+            word = m.group(2)
+            cur = {"usd": "USD", "dollars": "USD", "bucks": "USD", "eur": "EUR",
+                   "euro": "EUR", "euros": "EUR", "gbp": "GBP", "inr": "INR",
+                   "rs": "INR", "cny": "CNY"}.get(word, "USD")
+            return num, cur
+    m = _re.search(r"(?:price|cost|rate|fee|charged?|per post|per link|pricing)\D{0,15}?(\d[\d,]*\.?\d*)", low)
+    if m:
+        num = _block_clean_num(m.group(1))
+        if num:
+            return num, "USD"
+    return None, None
+
+
+def _block_extract_dims(block: str):
+    """从单个报价块抽 cooperation_type / categories / languages / country。"""
+    low = block.lower()
+    out = {}
+    for kw, label in _BLOCK_COOP_MAP:
+        if kw in low:
+            out["cooperation_type"] = label
+            break
+    cats = [label for kw, label in _BLOCK_CATEGORY_MAP if kw in low]
+    if cats:
+        out["categories"] = ",".join(sorted(set(cats)))
+    langs = [code for kw, code in _BLOCK_LANG_MAP if kw in low]
+    if langs:
+        out["languages"] = ",".join(sorted(set(langs)))
+    for kw, code in _BLOCK_COUNTRY_MAP:
+        if kw in low:
+            out["country"] = code
+            break
+    return out
+
+
+def split_quote_blocks(text: str):
+    """
+    按价格信号把回信切成多个报价块。
+    返回 [{"block": str, "price": str|None, "currency": str|None, "dims": dict}, ...]。
+    切分规则:
+      1) 先按 换行 / ; / / / & / 'and' 粗切;
+      2) 含价格信号($/数字+货币/per post|link)的片段才算报价块;
+      3) 块内若含 '='/'–'/'—'/',' 分隔的多报价(如 "GP = $80, LI = $80"), 进一步拆。
+    """
+    if not text:
+        return []
+    # 注意: 不用 ',' 作为切块符 — 欧式小数 212,00 含逗号, 切了会破坏价格
+    raw_parts = _re.split(r"\n|;|/|&|\band\b", text)
+    blocks = []
+    for p in raw_parts:
+        p = p.strip(" •*-✅✔️\t")
+        if not p:
+            continue
+        has_price = bool(_re.search(
+            r"[$€£₹¥]|\d[\d,]*\.?\d*\s*(usd|eur|gbp|inr|cny|euros?|dollars?|bucks|rs)\b|per\s+(post|link)|/\s*(post|link)",
+            p.lower()))
+        if not has_price:
+            continue
+        # 只用 '='/'–'/'—' 拆多报价(如 "GP = $80" 里的 =);
+        # 不用 ',' 拆 — 欧式小数 212,00 含逗号, 拆了会破坏价格
+        sub = _re.split(r"=|–|—", p)
+        for s in sub:
+            s = s.strip()
+            if not s:
+                continue
+            if not _re.search(
+                r"[$€£₹¥]|\d[\d,]*\.?\d*\s*(usd|eur|gbp|inr|cny|euros?|dollars?|bucks|rs)\b|per\s+(post|link)|/\s*(post|link)",
+                s.lower()):
+                continue
+            pv, pc = _block_parse_price(s)
+            if pv is None:
+                continue
+            dims = _block_extract_dims(s)
+            blocks.append({"block": s, "price": pv, "currency": pc, "dims": dims})
+    return blocks
+
+
+def _build_quote_row(reply, email, domain, qf, price_str, norm, price_missing, user):
+    """构造一条 quote_pool 插入行 (回信级维度 qf 兜底, 块级维度由调用方覆盖)。"""
+    return {
+        "email": email,
+        "domain": domain,
+        "supplier": (reply.get("supplier") or "")[:200],
+        "contact_email": reply.get("contact_email") or email,
+        "niche": qf.get("niche", ""),
+        "country": qf.get("country", ""),
+        "traffic": qf.get("traffic", ""),
+        "site_category": "",
+        "cooperation_type": qf.get("cooperation_type", ""),
+        "categories": qf.get("categories", ""),
+        "languages": qf.get("languages", ""),
+        "price": price_str,
+        "normalized_price": norm["normalized_price"],
+        "normalized_currency": norm["normalized_currency"],
+        "link_rules": "",
+        "permanence": qf.get("permanence", ""),
+        "content": "",
+        "tat": "",
+        "payment": "",
+        "discount": "",
+        "additional_services": "",
+        "requirements": "",
+        "reply_id": reply.get("reply_id"),
+        "reply_content": (reply.get("reply_content") or "")[:8000],
+        "status": "Price TBD" if price_missing else "New",
+        "priority": 0,
+        "notes": (f"Imported from A-class reply by {user}"
+                  + (f" | 待补价" if price_missing else "")),
+        "discovered_by": user,
+        "discovered_at": now_iso(),
+    }
+
+
 @app.route("/api/quote/import-a-replies", methods=["POST"])
 def quote_import_a_replies():
     """
@@ -1763,14 +1953,14 @@ def quote_import_a_replies():
             break
         page += 1
 
-    # Get existing (email, domain, price) triples for dedup.
-    # Same email+domain with DIFFERENT price = distinct quote (keep both).
-    # Same email+domain+price = true duplicate (skip).
+    # Get existing quote rows for dedup.
+    # 方案A去重键: email|domain|price|cooperation_type|languages|categories
+    # 同网站不同报价条件(类型/语言/行业)都保留, 真重复(全维度一致)才跳过。
     existing_keys = set()
     page = 0
     while True:
         resp = requests.get(
-            f"{SUPABASE_URL}/rest/v1/quote_pool?select=email,domain,price&limit={page_size}&offset={page*page_size}",
+            f"{SUPABASE_URL}/rest/v1/quote_pool?select=email,domain,price,cooperation_type,languages,categories&limit={page_size}&offset={page*page_size}",
             headers=AUTH_HEADERS,
             timeout=30
         )
@@ -1781,10 +1971,19 @@ def quote_import_a_replies():
             break
         for r in data:
             e = (r.get("email") or "").lower()
+            if not e:
+                continue
             d = (r.get("domain") or "").lower()
             p = (r.get("price") or "").strip().lower()
-            if e:
-                existing_keys.add(f"{e}|{d}|{p}")
+            ct = (r.get("cooperation_type") or "").strip().lower()
+            lg = (r.get("languages") or "").strip().lower()
+            ca = (r.get("categories") or "").strip().lower()
+            # 双粒度去重键:
+            # 1) 新粒度(全维度) — 覆盖已导入的多维报价行
+            existing_keys.add(f"{e}|{d}|{p}|{ct}|{lg}|{ca}")
+            # 2) 旧粒度(email|domain|price) — 覆盖旧逻辑导入的单价格行首行,
+            #    避免同封回信被重复插入(无论新解析维度是否变化)
+            existing_keys.add(f"{e}|{d}|{p}")
         if len(data) < page_size:
             break
         page += 1
@@ -1819,25 +2018,11 @@ def quote_import_a_replies():
         if not email:
             continue
 
-        # 价格优先从 reply_pool.notes 里的 v2_price:$XX 标签取 (来自原始回信 Excel, 避免丢价)
-        # 其次从回复正文解析 (修复: 进 quote pool 的 A类应有价格)
-        price_str = ""
+        reply_content = reply.get("reply_content", "") or ""
         notes_text = reply.get("notes") or ""
-        m_v2 = _re.search(r"v2_price:\s*\$?\s*(\d[\d,]*\.?\d*)\s*(USD|EUR|GBP|INR|CNY)?", notes_text)
-        if m_v2:
-            pv = m_v2.group(1)
-            pc = m_v2.group(2) or "USD"
-            price_str = f"{pv} {pc}".strip()
-        else:
-            pval, pcur = _parse_price_from_content(reply.get("reply_content", ""))
-            price_str = f"{pval} {pcur}".strip() if pval else ""
 
-        # 自动标准化价格 (写 normalized_price / normalized_currency, 无需人工)
-        norm = _normalize_price_fields(price_str)
-
-        # 从回复正文抽取供应商维度字段 (niche/country/cooperation_type 等)
-        qf = _extract_quote_fields(reply.get("reply_content", ""))
-        price_missing = not price_str
+        # 整封回信级维度 (niche/traffic/permanence/country) 仍从全文抽, 作为每行兜底补充
+        qf = _extract_quote_fields(reply_content)
 
         # domain 为空则跳过, 避免脏行 (空 domain 行会在前端显示为空白)
         domain = (reply.get("domain") or (email.split("@")[-1] if "@" in email else "")).lower()
@@ -1845,47 +2030,64 @@ def quote_import_a_replies():
             skipped += 1
             continue
 
-        # Dedup on (email, domain, price) triple — same email+domain with a
-        # DIFFERENT price is a distinct quote and must be kept.
-        dedup_key = f"{email}|{domain}|{price_str.strip().lower()}"
-        if not force and dedup_key in existing_keys:
-            skipped += 1
+        # 方案A: 按价格信号把回信切成多个报价块
+        blocks = split_quote_blocks(reply_content)
+
+        # notes 里的 v2_price 标签优先 (来自原始回信 Excel, 单价格场景)
+        m_v2 = _re.search(r"v2_price:\s*\$?\s*(\d[\d,]*\.?\d*)\s*(USD|EUR|GBP|INR|CNY)?", notes_text)
+        v2_price_str = ""
+        if m_v2:
+            pv = m_v2.group(1)
+            pc = m_v2.group(2) or "USD"
+            v2_price_str = f"{pv} {pc}".strip()
+
+        if not blocks:
+            # 无价回信: 保留1行待补价 (保持旧行为, 不丢回信)
+            price_str = v2_price_str
+            price_missing = not price_str
+            norm = _normalize_price_fields(price_str) if price_str else {"normalized_price": None, "normalized_currency": None}
+            dedup_key = f"{email}|{domain}|{price_str.strip().lower()}|||"
+            if not force and dedup_key in existing_keys:
+                skipped += 1
+                continue
+            existing_keys.add(dedup_key)
+            batch.append(_build_quote_row(reply, email, domain, qf, price_str, norm, price_missing, user))
+            if len(batch) >= BATCH_SIZE:
+                flush()
             continue
-        existing_keys.add(dedup_key)
 
-        batch.append({
-            "email": email,
-            "domain": domain,
-            "supplier": (reply.get("supplier") or "")[:200],
-            "contact_email": reply.get("contact_email") or email,
-            "niche": qf.get("niche", ""),
-            "country": qf.get("country", ""),
-            "traffic": qf.get("traffic", ""),
-            "site_category": "",
-            "cooperation_type": qf.get("cooperation_type", ""),
-            "price": price_str,
-            "normalized_price": norm["normalized_price"],
-            "normalized_currency": norm["normalized_currency"],
-            "link_rules": "",
-            "permanence": qf.get("permanence", ""),
-            "content": "",
-            "tat": "",
-            "payment": "",
-            "discount": "",
-            "additional_services": "",
-            "requirements": "",
-            "reply_id": reply.get("reply_id"),
-            "reply_content": (reply.get("reply_content") or "")[:8000],
-            "status": "Price TBD" if price_missing else "New",
-            "priority": 0,
-            "notes": (f"Imported from A-class reply by {user}"
-                      + (f" | 待补价" if price_missing else "")),
-            "discovered_by": user,
-            "discovered_at": now_iso(),
-        })
+        # 有报价块: 每块生成1行
+        for blk in blocks:
+            # 单块且整封有 v2_price 时, 优先用 v2_price (更可靠)
+            if len(blocks) == 1 and v2_price_str:
+                price_str = v2_price_str
+            else:
+                price_str = f"{blk['price']} {blk['currency']}".strip()
+            price_missing = not price_str
+            norm = _normalize_price_fields(price_str) if price_str else {"normalized_price": None, "normalized_currency": None}
 
-        if len(batch) >= BATCH_SIZE:
-            flush()
+            # 块级维度优先, 回信级维度兜底
+            coop = blk["dims"].get("cooperation_type", "") or qf.get("cooperation_type", "")
+            cats = blk["dims"].get("categories", "") or qf.get("categories", "")
+            langs = blk["dims"].get("languages", "") or qf.get("languages", "")
+            country = blk["dims"].get("country", "") or qf.get("country", "")
+
+            dedup_key = f"{email}|{domain}|{price_str.strip().lower()}|{coop.lower()}|{langs.lower()}|{cats.lower()}"
+            if not force and dedup_key in existing_keys:
+                skipped += 1
+                continue
+            existing_keys.add(dedup_key)
+
+            row = _build_quote_row(reply, email, domain, qf, price_str, norm, price_missing, user)
+            # 用块级维度覆盖回信级
+            row["cooperation_type"] = coop
+            row["categories"] = cats
+            row["languages"] = langs
+            row["country"] = country
+            row["reply_content"] = (reply_content or "")[:8000]
+            batch.append(row)
+            if len(batch) >= BATCH_SIZE:
+                flush()
 
     flush()
 
@@ -3371,15 +3573,10 @@ function saveUserName(){
     }
   }
 }
-// Load saved user name on page load
-(function(){
-  const saved=localStorage.getItem('shared_pool_user');
-  if(saved){
-    ['d-user','e-user','r-user','q-user'].forEach(id=>{
-      const el=document.getElementById(id); if(el) el.value=saved;
-    });
-  }
-})();
+// NOTE: 不再在页面加载时把 localStorage 自动灌入输入框。
+// 旧逻辑会让上一个用户(如 leo)的名字残留预填，导致下一个用户未手动修改时
+// getUserName() 取到残留名、日志/claimed_by 误记成 leo。
+// 现在输入框默认空，谁操作谁必须自己填；saveUserName() 仍会记住手动填写的名字。
 
 // ── Import panel ──
 function toggleImport(){
