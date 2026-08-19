@@ -1485,9 +1485,31 @@ def quote_export():
     elif scope == "abnormal":
         # NEED_DOMAIN / NEED_PRICE / NEED_REVIEW 等任意非 READY
         filters["data_status"] = "neq.READY"
-    quotes = db.select("quote_pool", select="*", limit=10000,
-                       filters=filters,
-                       order="discovered_at", ascending=False)
+    # Supabase PostgREST 单次硬上限 1000 行，必须分页拉全量。
+    # 用 quote_id 排序保证分页稳定（discovered_at 多为 null 会导致排序重叠/死循环）。
+    # 单页失败 5 次退避重试，抗 Supabase SSL 抖动。
+    quotes = []
+    page = 0
+    PAGE = 1000
+    while True:
+        batch = None
+        for _ in range(5):
+            try:
+                batch = db.select(
+                    "quote_pool", select="*", limit=PAGE, offset=page * PAGE,
+                    filters=filters, order="quote_id", ascending=True,
+                )
+                if batch is not None:
+                    break
+            except Exception:
+                import time
+                time.sleep(1.5)
+        if not batch:
+            break
+        quotes.extend(batch)
+        if len(batch) < PAGE:
+            break
+        page += 1
     # Jenny CSV columns (excluding Casino/Finance/Erotic/Dating/CBD/Crypto/Medicine Niche Price)
     # + 8 standard fields as separate columns (cooperation_type/payment/discount/link_rules/
     #   content/requirements/additional_services/supplier)
