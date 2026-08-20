@@ -1375,6 +1375,14 @@ def quote_add():
         "notes": data.get("notes", ""),
         "discovered_by": data.get("discovered_by", "manual"),
     }
+    # 价格统一折美元 (去符号), 并备份原值
+    raw_price = data.get("price", "")
+    if raw_price not in (None, ""):
+        usd_val, cur_label, fx_unres = _convert_price_to_usd(raw_price)
+        payload["price"] = ("%g" % usd_val) if usd_val is not None else raw_price
+        payload["original_price"] = str(raw_price)
+        payload["normalized_price"] = usd_val
+        payload["normalized_currency"] = cur_label
     resp, result = db.insert("quote_pool", payload)
     return jsonify({"result": "created"})
 
@@ -1689,10 +1697,110 @@ def _parse_price_from_content(text: str):
     return None, None
 
 
+# ── 实时汇率换算 (写入 quote_pool 前统一折美元) ──
+# 本地兜底表 + 运行时拉 exchangerate.host (免费无 key), 网络失败用兜底值。
+_FX_DEFAULT = {
+    "USD": 1.0, "EUR": 1.08, "GBP": 1.27, "CAD": 0.73, "AUD": 0.66, "NZD": 0.61,
+    "JPY": 0.0067, "CNY": 0.14, "RMB": 0.14, "HKD": 0.13, "SGD": 0.74, "INR": 0.012,
+    "KRW": 0.00073, "TWD": 0.031, "TRY": 0.029, "BRL": 0.18, "MXN": 0.058, "RUB": 0.011,
+    "ZAR": 0.054, "SEK": 0.095, "NOK": 0.093, "CHF": 1.12, "PLN": 0.25, "THB": 0.028,
+    "IDR": 0.000063, "MYR": 0.22, "PHP": 0.017, "CZK": 0.043, "HUF": 0.0028, "ILS": 0.27,
+    "AED": 0.27, "SAR": 0.27, "NGN": 0.00066, "VND": 0.000040, "UAH": 0.025,
+}
+_FX_CACHE = {}
+_FX_CACHE_TTL = 3600 * 6
+
+
+def _fx_rate(ccy: str):
+    """返回 1 单位 ccy = 多少 USD。本地表有就用, 否则实时拉; 都没有返回 None。"""
+    import threading
+    ccy = (ccy or "USD").upper().strip()
+    if ccy in _FX_DEFAULT:
+        return _FX_DEFAULT[ccy]
+    import time, json, urllib.request, os
+    cache_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".fx_cache.json")
+    if ccy in _FX_CACHE and (time.time() - _FX_CACHE[ccy].get("ts", 0) < _FX_CACHE_TTL):
+        return _FX_CACHE[ccy].get("rate")
+    try:
+        req = urllib.request.Request("https://api.exchangerate.host/latest?base=USD",
+                                     headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            rates = json.loads(r.read().decode("utf-8")).get("rates", {})
+        usd = {}
+        for k, v in rates.items():
+            usd[k] = 1.0 / float(v) if v else 0.0
+        usd["USD"] = 1.0
+        # 合并写缓存
+        try:
+            with open(cache_file, "w", encoding="utf-8") as f:
+                json.dump(usd, f)
+        except Exception:
+            pass
+        _FX_CACHE.clear()
+        _FX_CACHE.update(usd)
+        if ccy in usd:
+            return usd[ccy]
+    except Exception:
+        pass
+    return None
+
+
+def _convert_price_to_usd(price_str: str):
+    """
+    把报价文本折成美元纯数字。
+    返回 (price_usd_float_or_None, currency_label, fx_unresolved_bool)
+      - currency_label: 成功折美元="USD"; 未知币种且拉不到汇率=原币种
+      - fx_unresolved: 是否因汇率缺失未换算
+    多段价格 (如 €250/€400) 每段独立折, price 列用 / 连接纯数字串。
+    """
+    if not price_str:
+        return None, "USD", False
+    segs = [s.strip() for s in str(price_str).split("/") if s.strip()]
+    out, fx_unresolved, main_ccy = [], False, "USD"
+    for seg in segs:
+        ccy = None
+        for sym, code in {"$": "USD", "€": "EUR", "£": "GBP", "₹": "INR", "¥": "CNY", "￥": "CNY"}.items():
+            if sym in seg:
+                ccy = code
+                break
+        if ccy is None:
+            m = re.search(r"\b([A-Za-z]{3})\b", seg)
+            if m:
+                ccy = m.group(1).upper()
+        num = re.sub(r"[^0-9.]", "", seg)
+        if not num:
+            continue
+        try:
+            val = float(num)
+        except ValueError:
+            continue
+        if ccy in (None, "USD"):
+            usd = val
+        else:
+            rate = _fx_rate(ccy)
+            if rate is None:
+                fx_unresolved = True
+                main_ccy = ccy
+                out.append(("%g" % val))
+                continue
+            usd = val * rate
+            main_ccy = "USD"
+        out.append(("%g" % usd) if usd != int(usd) else str(int(usd)))
+    if not out:
+        return None, main_ccy, fx_unresolved
+    first = out[0]
+    try:
+        first_val = float(first)
+    except ValueError:
+        first_val = None
+    return first_val, ("USD" if not fx_unresolved else main_ccy), fx_unresolved
+
+
 def _normalize_price_fields(price_str: str):
     """
     从 price 原始文本(如 "$35/post / $20/post" 或 "£120/post / £90/link")
     提取首个有效金额与货币, 返回 {normalized_price: float|None, normalized_currency: str|None}。
+    已自动折美元 (unknown 币种拉不到汇率时保留原币种)。
     供导入流程自动标准化, 避免人工回填。
     """
     if not price_str:
@@ -1701,10 +1809,15 @@ def _normalize_price_fields(price_str: str):
     if pval is None:
         return {"normalized_price": None, "normalized_currency": None}
     try:
-        return {"normalized_price": float(pval.replace(",", "")),
-                "normalized_currency": pcur or "USD"}
+        raw_amt = float(pval.replace(",", ""))
     except ValueError:
         return {"normalized_price": None, "normalized_currency": None}
+    if pcur in (None, "USD"):
+        return {"normalized_price": raw_amt, "normalized_currency": "USD"}
+    rate = _fx_rate(pcur)
+    if rate is None:
+        return {"normalized_price": raw_amt, "normalized_currency": pcur}
+    return {"normalized_price": round(raw_amt * rate, 2), "normalized_currency": "USD"}
 
 
 def _extract_quote_fields(text: str):
