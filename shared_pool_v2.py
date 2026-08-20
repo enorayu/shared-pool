@@ -42,14 +42,21 @@ from datetime import datetime, timezone, timedelta
 
 # ── Config ─────────────────────────────────────────────────
 try:
-    from config import SUPABASE_URL, SUPABASE_ANON_KEY
+    from config import SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY
 except ImportError:
     print("ERROR: config.py not found. Create config.py with SUPABASE_URL and SUPABASE_ANON_KEY.")
     sys.exit(1)
 
-if not SUPABASE_URL or not SUPABASE_ANON_KEY or "YOUR_PROJECT" in SUPABASE_URL:
+if not SUPABASE_URL or ("YOUR_PROJECT" in SUPABASE_URL):
     print("ERROR: Please edit config.py with your actual Supabase credentials.")
     sys.exit(1)
+if not SUPABASE_ANON_KEY and not SUPABASE_SERVICE_ROLE_KEY:
+    print("ERROR: Please set SUPABASE_ANON_KEY or SUPABASE_SERVICE_ROLE_KEY in config.py.")
+    sys.exit(1)
+
+# 2026-08-19 Pro 升级后，anon key 的 JWT ref (hoab) 与 Dashboard 显示的 project ID (hoah) 不一致 → 401。
+# 临时统一改用 service_role key（ref=hoah，已通过认证）；anon key 失效，Dashboard 不重新签发就继续 service_role。
+_PRIMARY_KEY = SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY
 
 # ── Flask ───────────────────────────────────────────────────
 try:
@@ -70,8 +77,8 @@ def add_cors_headers(response):
 
 REST_URL = f"{SUPABASE_URL}/rest/v1"
 AUTH_HEADERS = {
-    "apikey": SUPABASE_ANON_KEY,
-    "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+    "apikey": _PRIMARY_KEY,
+    "Authorization": f"Bearer {_PRIMARY_KEY}",
 }
 
 # Simple in-memory cache to reduce Supabase API calls
@@ -134,8 +141,8 @@ class SB:
     def __init__(self):
         self.base = REST_URL
         self._headers = {
-            "apikey": SUPABASE_ANON_KEY,
-            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+            "apikey": _PRIMARY_KEY,
+            "Authorization": f"Bearer {_PRIMARY_KEY}",
         }
 
     def _req(self, method, path, data=None, params=None, extra_headers=None):
@@ -798,34 +805,24 @@ def email_export():
         return jsonify({"error": "user is required", "exported": 0}), 400
     count = min(int(data.get("count", 500)), 5000)
 
-    # ── 原子导出: 调用 DB 函数 export_emails_atomic ──
-    # 该函数在单个事务内 SELECT ... FOR UPDATE SKIP LOCKED + 立即 UPDATE,
-    # 彻底消除旧 check-then-act 的并发竞态 (两人同时导出会抢同一批邮箱)。
-    # 数据库侧已创建该函数 (见 SQL: export_emails_atomic)。
-    try:
-        rpc_resp = requests.post(
-            f"{REST_URL}/rpc/export_emails_atomic",
-            headers={**AUTH_HEADERS, "Content-Type": "application/json", "Prefer": "return=representation"},
-            json={"p_user": user, "p_count": count},
-            timeout=60,
-        )
-        if rpc_resp.status_code not in (200, 201):
-            return jsonify({
-                "error": f"atomic export failed: HTTP {rpc_resp.status_code}",
-                "detail": rpc_resp.text[:500],
-                "exported": 0,
-            }), 500
-        emails = rpc_resp.json()
-    except Exception as e:
-        return jsonify({"error": f"atomic export exception: {str(e)}", "exported": 0}), 500
+    # Only unsent and unclaimed (prevent duplicate export race condition)
+    filters = {"send_status": "UNSENT", "claimed_by": "is.null"}
+
+    emails = db.select(
+        "email_pool",
+        select="email_id,email,domain,send_status,collection_status,source,claimed_by",
+        filters=filters,
+        limit=count,
+        order="email_id",
+        ascending=True,
+    )
 
     if not emails:
         return jsonify({"exported": 0, "filename": ""})
 
-    # batch_id / filename 基于第一批的 claim_time 精确对应
-    now = now_iso()
     batch_id = f"email_send_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{user}"
     filename = f"{batch_id}.csv"
+    now = now_iso()
 
     # Generate CSV — sequential #, not email_id
     output = io.StringIO()
@@ -835,8 +832,8 @@ def email_export():
         writer.writerow([
             idx,
             safe_str(e.get("email")),
-            e.get("domain") or "",
-            e.get("send_status", "SENT"),
+            e["domain"],
+            e.get("send_status", "UNSENT"),
             safe_str(e.get("source")),
         ])
 
@@ -846,7 +843,22 @@ def email_export():
     with open(os.path.join(export_dir, filename), "w", newline="", encoding="utf-8") as f:
         f.write(csv_content)
 
-    updated_count = len(emails)
+    # Lock: mark as SENT + extracted, assign to user
+    ids = [e["email_id"] for e in emails]
+    resp, result = db.patch_by_ids("email_pool", {
+        "send_status": "SENT",
+        "source": "已提取",
+        "claimed_by": user,
+        "claim_time": now,
+        "updated_at": now,
+    }, ids, id_column="email_id")
+    
+    # Verify update succeeded
+    if resp and hasattr(resp, "status") and resp.status in (200, 201, 204):
+        updated_count = len(result) if isinstance(result, list) else len(emails)
+    else:
+        updated_count = 0
+        print(f"[WARN] email_export PATCH failed: resp={resp}, result={result}")
 
     global _cache
     _cache.clear()
@@ -973,37 +985,17 @@ def email_pool_import():
 # Reply Pool API (→ reply_pool table, fallback to supplier_pool)
 # ════════════════════════════════════════════════════════════
 
-def _parse_reply_category(notes, content=""):
-    """Parse A/B/C category from supplier_pool notes field or reply content."""
-    notes = str(notes or "")
-    content = str(content or "")
-    if not notes and not content:
+def _parse_reply_category(notes):
+    """Parse A/B/C category from supplier_pool notes field."""
+    if not notes:
         return "C"
-    notes_lower = notes.lower()
-    content_lower = content.lower()
-
-    # 显式标签优先 (来自 Excel notes 列)
-    if "分类:A" in notes or "有合作意向" in notes or "分类:a" in notes_lower:
+    notes = str(notes)
+    if "分类:A" in notes or "有合作意向" in notes:
         return "A"
-    if "分类:B" in notes or "分类:b" in notes_lower:
+    if "分类:B" in notes:
         return "B"
     if "分类:C" in notes or "一般回复" in notes or "历史回复" in notes:
         return "C"
-
-    # 从回复正文推断 (A类=明确合作/报价意向; B类=询问细节/犹豫)
-    a_signals = ["报价", "价格", "多少钱", "合作意向", "愿意合作", "interested in", "price quote",
-                 "our rate", "we charge", "guest post", "sponsor", "link placement", "合作方式",
-                 "报价单", "fee", "cost", "usd", "eur", "$", "£", "€"]
-    b_signals = ["请问", "如何", "什么要求", "需要什么", "more info", "could you", "details",
-                 "tell me more", "what are", "requirements", "考虑一下", "再看看", "商量"]
-
-    a_hits = sum(1 for s in a_signals if s in content_lower)
-    b_hits = sum(1 for s in b_signals if s in content_lower)
-
-    if a_hits > 0 and a_hits >= b_hits:
-        return "A"
-    if b_hits > 0:
-        return "B"
     return "C"
 
 
@@ -1156,7 +1148,7 @@ def reply_import():
             "domain": domain.lower(),
             "reply_content": f"{subject}\n\n{body}"[:5000],
             "reply_time": reply_time,
-            "category": _parse_reply_category(notes=row.get(col_map.get('subject', ''), '') or '', content=f"{subject}\n{body}"),
+            "category": "C",
             "status": "New",
             "supplier": supplier[:200],
             "contact_email": email,
@@ -1382,12 +1374,11 @@ def quote_add():
 @app.route("/api/price/list", methods=["GET"])
 @app.route("/api/quote/list", methods=["GET"])
 def quote_list():
-    """List quotes with optional filters and full-text keyword search."""
+    """List quotes with optional filters."""
     domain = request.args.get("domain", "")
     status = request.args.get("status", "")
     niche = request.args.get("niche", "")
     supplier = request.args.get("supplier", "")
-    search = request.args.get("search", "").strip()
     limit = min(int(request.args.get("limit", 100)), 1000)
     offset = int(request.args.get("offset", 0))
 
@@ -1401,43 +1392,17 @@ def quote_list():
     if supplier:
         filters["supplier"] = supplier
 
-    # Keyword search: build or= filter across key text fields
-    # PostgREST uses * as wildcard (not SQL %), and or=(...) parenthesized format
-    if search:
-        # Escape special chars in search term for safe inclusion in filter
-        safe_search = search.replace("*", "\\*").replace("%", "\\%").replace("_", "\\_")
-        or_clauses = ",".join([
-            f"domain.ilike.*{safe_search}*",
-            f"supplier.ilike.*{safe_search}*",
-            f"email.ilike.*{safe_search}*",
-            f"contact_email.ilike.*{safe_search}*",
-            f"content.ilike.*{safe_search}*",
-            f"notes.ilike.*{safe_search}*",
-            f"country.ilike.*{safe_search}*",
-            f"niche.ilike.*{safe_search}*",
-            f"site_category.ilike.*{safe_search}*",
-            f"keywords.ilike.*{safe_search}*",
-            f"categories.ilike.*{safe_search}*",
-            f"link_rules.ilike.*{safe_search}*",
-        ])
-        # Use direct _req call so we control the exact query string
-        qs_parts = [f"select=*", f"limit={limit}", f"offset={offset}",
-                     f"order=discovered_at.desc", f"or=({or_clauses})"]
-        for k, v in filters.items():
-            fp = db._filter_part(k, v)
-            if fp:
-                qs_parts.append(fp)
-        qs = "&".join(qs_parts)
-        resp, data = db._req("GET", f"quote_pool?{qs}", extra_headers={"Prefer": "count=exact"})
-        total = int((resp.headers.get("Content-Range") or "*/0").split("/")[-1])
-        quotes = data if isinstance(data, list) else []
-        return jsonify({"quotes": quotes or [], "total": total, "offset": offset})
-
-    quotes = _quote_fetch_and_sort(filters)
-    total = len(quotes)
-    # Python 端分页（空壳置底已在 _quote_fetch_and_sort 完成）
-    page_quotes = quotes[offset:offset + limit]
-    return jsonify({"quotes": page_quotes or [], "total": total, "offset": offset})
+    quotes = db.select(
+        "quote_pool",
+        select="*",
+        filters=filters,
+        limit=limit,
+        offset=offset,
+        order="discovered_at",
+        ascending=False,
+    )
+    total = db.count("quote_pool", filters=filters)
+    return jsonify({"quotes": quotes or [], "total": total, "offset": offset})
 
 
 @app.route("/api/price/stats", methods=["GET"])
@@ -1465,143 +1430,90 @@ def quote_stats():
     })
 
 
-_QUOTE_EMPTY_DIMS = ["dr","da","ref_domains","traffic","country","keywords","categories",
-                    "languages","cooperation_type","payment","link_rules","permanence","content"]
-def _quote_fill_count(q):
-    """13 个关键维度字段中非空数；"""
-    return sum(1 for k in _QUOTE_EMPTY_DIMS if q.get(k) not in (None, "", "null"))
-
-def _quote_is_empty(q):
-    """判定是否为"空壳行"（应置底）。
-    空壳 = 没有任何可用数据：13 个维度字段全空 AND 没有原始回信(reply_content/reply_id 都无)。
-    只要带原始回信(reply_id 或 reply_content 非空)即视为有用数据，不管维度字段多空——
-    因为 reply_content 里有供应商的完整报价原文，是可对外使用的真数据。
-    """
-    if q.get("reply_id") not in (None, "", 0):
-        return False
-    rc = q.get("reply_content")
-    if rc not in (None, "", "null") and str(rc).strip():
-        return False
-    return _quote_fill_count(q) < 1
-
-def _quote_sort_key(q, original_index):
-    """面板 /api/quote/list 和导出 /api/quote/export 共用排序：
-    空壳行置底，其余按 discovered_at DESC（同 discovered_at 时稳定按原序避免抖动）。
-    original_index 由调用方传入，记录其在 DB 返回列表里的位置（discovered_at DESC 序）。
-    """
-    is_empty = _quote_is_empty(q)
-    # 空壳=1 (排后)，非空=0 (排前)；同组内用 -original_index 让 discovered_at DESC 的原顺序保留
-    # 用 None 时排最后而非最前，避免 NULL discovered_at 把空壳行顶到头部
-    disc = q.get("discovered_at") or ""
-    return (1 if is_empty else 0, disc, -original_index)
-
-def _quote_fetch_and_sort(filters, scope=None):
-    """按 discovered_at DESC 全量拉 quote_pool（PG 单次 1000 上限，分页拉），Python 侧空壳置底。
-    返回按 (_quote_sort_key) 排序后的 list。
-    与面板 /api/quote/list + 导出 /api/quote/export 共用，确保两边行序逐行对应。
-    """
-    all_rows = []
+@app.route("/api/price/export", methods=["GET"])
+@app.route("/api/quote/export", methods=["GET"])
+def quote_export():
+    """Export quotes as CSV — Jenny template format (without 6 Niche Price columns)."""
+    # Supabase PostgREST 单次硬上限 1000 行，必须分页拉全量
+    # 用 quote_id 排序保证分页稳定（discovered_at 多为 null 会导致排序重叠）
+    quotes = []
     page = 0
     PAGE = 1000
     while True:
         batch = None
-        for _ in range(5):
+        for _ in range(5):  # 单页失败退避重试，应对 SSL/超时抖动
             try:
-                batch = db.select(
-                    "quote_pool", select="*", limit=PAGE, offset=page * PAGE,
-                    filters=filters, order="discovered_at", ascending=False,
-                )
+                batch = db.select("quote_pool", select="*", limit=PAGE, offset=page * PAGE,
+                                  order="quote_id", ascending=True)
                 if batch is not None:
                     break
             except Exception:
-                import time
-                time.sleep(1.5)
+                import time as _t
+                _t.sleep(1.5)
         if not batch:
             break
-        all_rows.extend(batch)
+        quotes.extend(batch)
         if len(batch) < PAGE:
             break
         page += 1
-    # 稳定排序：先 enumerate 再 sort，原 discovered_at DESC 序保留
-    indexed = list(enumerate(all_rows))
-    indexed.sort(key=lambda ix: _quote_sort_key(ix[1], ix[0]))
-    return [q for _, q in indexed]
-
-@app.route("/api/price/export", methods=["GET"])
-@app.route("/api/quote/export", methods=["GET"])
-def quote_export():
-    """Export quotes as CSV — Jenny template format (without 6 Niche Price columns).
-    scope=all (默认) | ready (仅READY) | abnormal (NEED_*)
-
-    """
-    scope = (request.args.get("scope") or "all").lower()
-    filters = {}
-    if scope == "ready":
-        filters["data_status"] = "eq.READY"
-    elif scope == "abnormal":
-        # NEED_DOMAIN / NEED_PRICE / NEED_REVIEW 等任意非 READY
-        filters["data_status"] = "neq.READY"
-    # 与面板 /api/quote/list 共用 _quote_fetch_and_sort，确保行序逐行对应
-    quotes = _quote_fetch_and_sort(filters, scope=scope)
     # Jenny CSV columns (excluding Casino/Finance/Erotic/Dating/CBD/Crypto/Medicine Niche Price)
     # + 8 standard fields as separate columns (cooperation_type/payment/discount/link_rules/
     #   content/requirements/additional_services/supplier)
     headers = ["#", "Link", "Price", "Backlink Type", "DR", "DA",
                "Ref. Domains", "Traffic", "Country", "Keywords",
                "Categories", "Languages", "TAT", "Permanence", "Contact",
-               "Cooperation", "Payment", "Link Rules", "Status",
-               "Data Status"]
+               "Cooperation", "Payment", "Discount", "Link Rules", "Status", "其他"]
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(headers)
 
+    # Fields already represented as explicit columns → exclude from "其他"
+    mapped_keys = {'domain','price','cooperation_type','traffic','country',
+                   'site_category','niche','tat','permanence','contact_email',
+                   'email','supplier','da','dr','ref_domains','keywords',
+                   'categories','languages','link_rules','content','payment',
+                   'discount','additional_services','requirements',
+                   'reply_content','status','notes','discovered_by',
+                   'discovered_at','quote_id','reply_id','id','priority'}
+
     for idx, q in enumerate(quotes or [], 1):
-        # Price: 优先 normalized_price + 单位(USD)，去掉多余小数点
-        norm = q.get("normalized_price")
-        if norm is not None and str(norm).strip() != "":
-            price_val = float(norm)
-            # 整数不显示 .0，真正有小数才保留
-            price_display = str(int(price_val)) if price_val == int(price_val) else f"{price_val:g}"
-            price_cell = f"{price_display} {q.get('normalized_currency') or 'USD'}"
-        else:
-            price_cell = safe_str(q.get("price"))
-        # Link: domain 已是 canonical 标准化后的真实域名（异常靠 Data Status 列+前端颜色区分）
-        link_cell = safe_str(q.get("domain"))
+        # Build "其他" column from truly unmapped fields only
+        other_parts = []
+        for k, v in q.items():
+            if k.lower() not in mapped_keys and v is not None and str(v).strip():
+                other_parts.append(f"{k}: {v}")
+
         writer.writerow([
-            idx,                                          # 0  #
-            link_cell,                                    # 1  Link (异常域名带 [NEED_DOMAIN] 前缀)
-            price_cell,                                   # 2  Price (e.g. "100 USD" 无小数点)
-            safe_str(q.get("price_type") or q.get("site_category") or q.get("niche")),   # 3  Backlink Type
-            safe_str(q.get("dr") or q.get("traffic")),     # 4  DR
-            safe_str(q.get("da")),                         # 5  DA
-            safe_str(q.get("ref_domains")),                # 6  Ref. Domains
-            safe_str(q.get("traffic")),                    # 7  Traffic
-            safe_str(q.get("country")),                    # 8  Country
-            safe_str(q.get("keywords")),                   # 9  Keywords
-            safe_str(q.get("categories")),                 # 10 Categories
-            safe_str(q.get("languages")),                  # 11 Languages
-            safe_str(q.get("tat")) or "",                  # 12 TAT (空则显示空，不漏到下一列)
-            safe_str(q.get("permanence")),                 # 13 Permanence
-            safe_str(q.get("contact_email") or q.get("email")),  # 14 Contact
-            safe_str(q.get("cooperation_type")),           # 15 Cooperation
-            safe_str(q.get("payment")),                    # 16 Payment
-            safe_str(q.get("link_rules")),                 # 17 Link Rules
-            safe_str(q.get("status")),                     # 18 Status
-            safe_str(q.get("data_status")),                # 19 Data Status
+            idx,
+            q.get("domain", ""),
+            safe_str(q.get("price")) or "N/A",
+            safe_str(q.get("site_category") or q.get("niche")),
+            safe_str(q.get("dr") or q.get("traffic")),
+            safe_str(q.get("da")),
+            safe_str(q.get("ref_domains")),
+            safe_str(q.get("traffic")),
+            safe_str(q.get("country")),
+            safe_str(q.get("niche") or q.get("site_category")),
+            safe_str(q.get("site_category") or q.get("niche")),
+            safe_str(q.get("languages")),
+            safe_str(q.get("tat")),
+            safe_str(q.get("permanence")),
+            safe_str(q.get("contact_email") or q.get("email")),
+            safe_str(q.get("cooperation_type")),
+            safe_str(q.get("payment")),
+            safe_str(q.get("discount")),
+            safe_str(q.get("link_rules")),
+            safe_str(q.get("content")),
+            safe_str(q.get("requirements")),
+            safe_str(q.get("additional_services")),
+            safe_str(q.get("supplier")),
+            " | ".join(other_parts),
         ])
 
-    # UTF-8 with BOM so Excel (zh-CN / Windows) opens Chinese fields correctly.
-    # Flask encodes a str body as Latin-1 by default → without explicit utf-8
-    # + BOM the non-ASCII columns (supplier/content/requirements/其他) get garbled.
-    csv_text = output.getvalue()
-    csv_bytes = "\ufeff".encode("utf-8") + csv_text.encode("utf-8")
-    # mimetype="text/csv" → Flask emits "text/csv; charset=utf-8" (single, clean).
-    # The UTF-8 BOM (ef bb bf) at the start is what makes Excel open Chinese correctly.
-    _scope_label = {"ready": "ready_only", "abnormal": "abnormal_only"}.get(scope, "all")
     return Response(
-        csv_bytes,
+        output.getvalue(),
         mimetype="text/csv",
-        headers={"Content-Disposition": f"attachment; filename=quote_pool_export_{_scope_label}.csv"},
+        headers={"Content-Disposition": "attachment; filename=quote_pool_export.csv"}
     )
 
 
@@ -1691,294 +1603,6 @@ def _parse_price_from_content(text: str):
     return None, None
 
 
-def _normalize_price_fields(price_str: str):
-    """
-    从 price 原始文本(如 "$35/post / $20/post" 或 "£120/post / £90/link")
-    提取首个有效金额与货币, 返回 {normalized_price: float|None, normalized_currency: str|None}。
-    供导入流程自动标准化, 避免人工回填。
-    """
-    if not price_str:
-        return {"normalized_price": None, "normalized_currency": None}
-    pval, pcur = _parse_price_from_content(price_str)
-    if pval is None:
-        return {"normalized_price": None, "normalized_currency": None}
-    try:
-        return {"normalized_price": float(pval.replace(",", "")),
-                "normalized_currency": pcur or "USD"}
-    except ValueError:
-        return {"normalized_price": None, "normalized_currency": None}
-
-
-def _extract_quote_fields(text: str):
-    """
-    从回复正文抽取报价所需的供应商维度字段 (best-effort, 抽不到返回空串)。
-    返回 dict: niche / country / cooperation_type / traffic / site_category / permanence
-    """
-    if not text:
-        return {}
-    low = text.lower()
-    out = {}
-
-    # cooperation_type: 合作类型
-    coop_map = [
-        ("guest post", "Guest Post"), ("guestpost", "Guest Post"),
-        ("sponsored", "Sponsored Post"), ("sponsor", "Sponsored Post"),
-        ("link insert", "Link Insert"), ("niche edit", "Link Insert"),
-        ("backlink", "Backlink"), ("permanent", "Permanent Link"),
-        ("homepage", "Homepage Link"), ("sidebar", "Sidebar Link"),
-        ("article", "Article"), ("blog post", "Guest Post"),
-        ("软文", "Guest Post"), ("客座", "Guest Post"), ("友链", "Backlink"),
-        ("首页链接", "Homepage Link"), ("外链", "Backlink"),
-    ]
-    for kw, label in coop_map:
-        if kw in low:
-            out["cooperation_type"] = label
-            break
-
-    # country: 国家/地区信号
-    country_map = [
-        ("usa", "US"), ("united states", "US"), ("u.s.", "US"), ("america", "US"),
-        ("uk", "UK"), ("united kingdom", "UK"), ("britain", "UK"), ("england", "UK"),
-        ("germany", "DE"), ("deutschland", "DE"), ("德国", "DE"),
-        ("france", "FR"), ("french", "FR"), ("法国", "FR"),
-        ("italy", "IT"), ("italia", "IT"), ("意大利", "IT"),
-        ("spain", "ES"), ("españa", "ES"), ("西班牙", "ES"),
-        ("india", "IN"), ("indian", "IN"), ("印度", "IN"),
-        ("canada", "CA"), ("canadian", "CA"), ("加拿大", "CA"),
-        ("australia", "AU"), ("australian", "AU"), ("澳大利亚", "AU"),
-        ("china", "CN"), ("中国", "CN"), ("brazil", "BR"), ("巴西", "BR"),
-        ("netherlands", "NL"), ("荷兰", "NL"), ("russia", "RU"), ("俄罗斯", "RU"),
-    ]
-    for kw, code in country_map:
-        if kw in low:
-            out["country"] = code
-            break
-
-    # niche: 行业/领域 (常见外链 niche 关键词)
-    niche_map = [
-        ("casino", "Casino"), ("gambling", "Gambling"), ("crypto", "Crypto"),
-        ("forex", "Forex"), ("finance", "Finance"), ("financial", "Finance"),
-        ("health", "Health"), ("fitness", "Health"), ("medical", "Health"),
-        ("tech", "Tech"), ("technology", "Tech"), ("saas", "Tech"),
-        ("travel", "Travel"), ("tourism", "Travel"), ("旅游", "Travel"),
-        ("fashion", "Fashion"), ("beauty", "Beauty"), ("时尚", "Fashion"),
-        ("food", "Food"), ("recipe", "Food"), ("美食", "Food"),
-        ("seo", "SEO"), ("marketing", "Marketing"), ("营销", "Marketing"),
-        ("real estate", "Real Estate"), ("房地产", "Real Estate"),
-        ("law", "Legal"), ("legal", "Legal"), ("律师", "Legal"),
-        ("pets", "Pets"), ("pet", "Pets"), ("宠物", "Pets"),
-        ("education", "Education"), ("教育", "Education"), ("游戏", "Gaming"),
-        ("gaming", "Gaming"), ("game", "Gaming"),
-    ]
-    for kw, label in niche_map:
-        if kw in low:
-            out["niche"] = label
-            break
-
-    # permanence: 永久性/时效性
-    if any(k in low for k in ["permanent", "永久", "never removed", "do-follow permanent"]):
-        out["permanence"] = "Permanent"
-    elif any(k in low for k in ["temporary", "临时", "6 month", "6 months", "one year", "1 year"]):
-        out["permanence"] = "Temporary"
-
-    # traffic: 流量信号 (月访问量)
-    m_traffic = _re.search(r"(\d[\d,]*)\s*(?:monthly\s+)?(?:visits|traffic|views|pv)", low)
-    if m_traffic:
-        out["traffic"] = m_traffic.group(1).replace(",", "")
-
-    return out
-
-
-# ----------------------------------------------------------------------------
-# 方案A: 一封回信 -> 多个报价块(按价格信号切), 每块生成独立 quote 行。
-# 不动表结构, 复用现有列 (cooperation_type / categories / languages / price 等)。
-# 以下函数来自 staging 验证 (quote_block_parser.py), 已修价格尾部句点 "100." -> "100"。
-# ----------------------------------------------------------------------------
-_CUR_MAP_BLOCK = {"$": "USD", "€": "EUR", "£": "GBP", "₹": "INR", "¥": "CNY"}
-
-_BLOCK_COOP_MAP = [
-    ("guest post", "Guest Post"), ("guestpost", "Guest Post"),
-    ("sponsored", "Sponsored Post"), ("sponsor", "Sponsored Post"),
-    ("link insert", "Link Insert"), ("niche edit", "Link Insert"),
-    ("backlink", "Backlink"), ("permanent", "Permanent Link"),
-    ("homepage", "Homepage Link"), ("sidebar", "Sidebar Link"),
-    ("article", "Article"), ("blog post", "Guest Post"),
-    ("软文", "Guest Post"), ("客座", "Guest Post"), ("友链", "Backlink"),
-    ("首页链接", "Homepage Link"), ("外链", "Backlink"),
-]
-_BLOCK_CATEGORY_MAP = [
-    ("casino", "Casino"), ("gambling", "Gambling"), ("crypto", "Crypto"),
-    ("forex", "Forex"), ("cbd", "CBD"), ("adult", "Adult"), ("dating", "Dating"),
-    ("fashion", "Fashion"), ("beauty", "Beauty"), ("travel", "Travel"),
-    ("health", "Health"), ("finance", "Finance"), ("tech", "Tech"),
-    ("game", "Gaming"), ("gaming", "Gaming"), ("real estate", "Real Estate"),
-]
-_BLOCK_LANG_MAP = [
-    ("english", "en"), ("eng", "en"), ("en site", "en"),
-    ("french", "fr"), ("français", "fr"), ("fr site", "fr"),
-    ("spanish", "es"), ("español", "es"), ("es site", "es"),
-    ("german", "de"), ("deutsch", "de"),
-    ("italian", "it"), ("portuguese", "pt"), ("russian", "ru"),
-]
-_BLOCK_COUNTRY_MAP = [
-    ("usa", "US"), ("united states", "US"), ("u.s.", "US"), ("america", "US"),
-    ("uk", "UK"), ("united kingdom", "UK"), ("britain", "UK"), ("england", "UK"),
-    ("germany", "DE"), ("france", "FR"), ("italy", "IT"), ("spain", "ES"),
-    ("india", "IN"), ("canada", "CA"), ("australia", "AU"), ("china", "CN"),
-]
-
-
-def _block_clean_num(s):
-    # 欧式小数: 212,00 -> 212.00 ; 但 1,234 (千分位) 也去逗号
-    # 规则: 若逗号后恰好2位且整体像小数(无更多逗号), 当小数; 否则去逗号当整数
-    s = s.strip()
-    s = _re.sub(r"\.$", "", s)  # 去尾部句点 "100." -> "100"
-    if "," in s:
-        parts = s.split(",")
-        if len(parts) == 2 and len(parts[1]) == 2 and parts[1].isdigit():
-            s = parts[0] + "." + parts[1]  # 欧式小数 212,00 -> 212.00
-        else:
-            s = s.replace(",", "")  # 千分位 1,234 -> 1234
-    try:
-        v = float(s)
-    except ValueError:
-        return None
-    if v <= 0:
-        return None
-    if 1900 <= v <= 2099:
-        return None
-    if v > 100000:
-        return None
-    return s
-
-
-def _block_parse_price(block: str):
-    """从单个报价块取首个有效金额+货币。返回 (price_str, currency) 或 (None, None)。"""
-    if not block:
-        return None, None
-    low = block.lower()
-    m = _re.search(r"([$€£₹¥])\s?\d[\d,]*\.?\d*", block)
-    if m:
-        sym = m.group(1)
-        num = _block_clean_num(_re.sub(r"[^\d.,]", "", m.group(0)))
-        if num:
-            return num, _CUR_MAP_BLOCK.get(sym, "USD")
-    m = _re.search(r"\b(\d[\d,]*\.?\d*)\s*(usd|eur|gbp|inr|cny|euros?|dollars?|bucks|rs)\b", low)
-    if m:
-        num = _block_clean_num(m.group(1))
-        if num:
-            word = m.group(2)
-            cur = {"usd": "USD", "dollars": "USD", "bucks": "USD", "eur": "EUR",
-                   "euro": "EUR", "euros": "EUR", "gbp": "GBP", "inr": "INR",
-                   "rs": "INR", "cny": "CNY"}.get(word, "USD")
-            return num, cur
-    m = _re.search(r"(?:price|cost|rate|fee|charged?|per post|per link|pricing)\D{0,15}?(\d[\d,]*\.?\d*)", low)
-    if m:
-        num = _block_clean_num(m.group(1))
-        if num:
-            return num, "USD"
-    return None, None
-
-
-def _block_extract_dims(block: str):
-    """从单个报价块抽 cooperation_type / categories / languages / country。"""
-    low = block.lower()
-    out = {}
-    for kw, label in _BLOCK_COOP_MAP:
-        if kw in low:
-            out["cooperation_type"] = label
-            break
-    cats = [label for kw, label in _BLOCK_CATEGORY_MAP if kw in low]
-    if cats:
-        out["categories"] = ",".join(sorted(set(cats)))
-    langs = [code for kw, code in _BLOCK_LANG_MAP if kw in low]
-    if langs:
-        out["languages"] = ",".join(sorted(set(langs)))
-    for kw, code in _BLOCK_COUNTRY_MAP:
-        if kw in low:
-            out["country"] = code
-            break
-    return out
-
-
-def split_quote_blocks(text: str):
-    """
-    按价格信号把回信切成多个报价块。
-    返回 [{"block": str, "price": str|None, "currency": str|None, "dims": dict}, ...]。
-    切分规则:
-      1) 先按 换行 / ; / / / & / 'and' 粗切;
-      2) 含价格信号($/数字+货币/per post|link)的片段才算报价块;
-      3) 块内若含 '='/'–'/'—'/',' 分隔的多报价(如 "GP = $80, LI = $80"), 进一步拆。
-    """
-    if not text:
-        return []
-    # 注意: 不用 ',' 作为切块符 — 欧式小数 212,00 含逗号, 切了会破坏价格
-    raw_parts = _re.split(r"\n|;|/|&|\band\b", text)
-    blocks = []
-    for p in raw_parts:
-        p = p.strip(" •*-✅✔️\t")
-        if not p:
-            continue
-        has_price = bool(_re.search(
-            r"[$€£₹¥]|\d[\d,]*\.?\d*\s*(usd|eur|gbp|inr|cny|euros?|dollars?|bucks|rs)\b|per\s+(post|link)|/\s*(post|link)",
-            p.lower()))
-        if not has_price:
-            continue
-        # 只用 '='/'–'/'—' 拆多报价(如 "GP = $80" 里的 =);
-        # 不用 ',' 拆 — 欧式小数 212,00 含逗号, 拆了会破坏价格
-        sub = _re.split(r"=|–|—", p)
-        for s in sub:
-            s = s.strip()
-            if not s:
-                continue
-            if not _re.search(
-                r"[$€£₹¥]|\d[\d,]*\.?\d*\s*(usd|eur|gbp|inr|cny|euros?|dollars?|bucks|rs)\b|per\s+(post|link)|/\s*(post|link)",
-                s.lower()):
-                continue
-            pv, pc = _block_parse_price(s)
-            if pv is None:
-                continue
-            dims = _block_extract_dims(s)
-            blocks.append({"block": s, "price": pv, "currency": pc, "dims": dims})
-    return blocks
-
-
-def _build_quote_row(reply, email, domain, qf, price_str, norm, price_missing, user):
-    """构造一条 quote_pool 插入行 (回信级维度 qf 兜底, 块级维度由调用方覆盖)。"""
-    return {
-        "email": email,
-        "domain": domain,
-        "supplier": (reply.get("supplier") or "")[:200],
-        "contact_email": reply.get("contact_email") or email,
-        "niche": qf.get("niche", ""),
-        "country": qf.get("country", ""),
-        "traffic": qf.get("traffic", ""),
-        "site_category": "",
-        "cooperation_type": qf.get("cooperation_type", ""),
-        "categories": qf.get("categories", ""),
-        "languages": qf.get("languages", ""),
-        "price": price_str,
-        "normalized_price": norm["normalized_price"],
-        "normalized_currency": norm["normalized_currency"],
-        "link_rules": "",
-        "permanence": qf.get("permanence", ""),
-        "content": "",
-        "tat": "",
-        "payment": "",
-        "discount": "",
-        "additional_services": "",
-        "requirements": "",
-        "reply_id": reply.get("reply_id"),
-        "reply_content": (reply.get("reply_content") or "")[:8000],
-        "status": "Price TBD" if price_missing else "New",
-        "priority": 0,
-        "notes": (f"Imported from A-class reply by {user}"
-                  + (f" | 待补价" if price_missing else "")),
-        "discovered_by": user,
-        "discovered_at": now_iso(),
-    }
-
-
 @app.route("/api/quote/import-a-replies", methods=["POST"])
 def quote_import_a_replies():
     """
@@ -2008,14 +1632,12 @@ def quote_import_a_replies():
             break
         page += 1
 
-    # Get existing quote rows for dedup.
-    # 方案A去重键: email|domain|price|cooperation_type|languages|categories
-    # 同网站不同报价条件(类型/语言/行业)都保留, 真重复(全维度一致)才跳过。
-    existing_keys = set()
+    # Get existing quote emails
+    existing_emails = set()
     page = 0
     while True:
         resp = requests.get(
-            f"{SUPABASE_URL}/rest/v1/quote_pool?select=email,domain,price,cooperation_type,languages,categories&limit={page_size}&offset={page*page_size}",
+            f"{SUPABASE_URL}/rest/v1/quote_pool?select=email&limit={page_size}&offset={page*page_size}",
             headers=AUTH_HEADERS,
             timeout=30
         )
@@ -2025,20 +1647,8 @@ def quote_import_a_replies():
         if not data:
             break
         for r in data:
-            e = (r.get("email") or "").lower()
-            if not e:
-                continue
-            d = (r.get("domain") or "").lower()
-            p = (r.get("price") or "").strip().lower()
-            ct = (r.get("cooperation_type") or "").strip().lower()
-            lg = (r.get("languages") or "").strip().lower()
-            ca = (r.get("categories") or "").strip().lower()
-            # 双粒度去重键:
-            # 1) 新粒度(全维度) — 覆盖已导入的多维报价行
-            existing_keys.add(f"{e}|{d}|{p}|{ct}|{lg}|{ca}")
-            # 2) 旧粒度(email|domain|price) — 覆盖旧逻辑导入的单价格行首行,
-            #    避免同封回信被重复插入(无论新解析维度是否变化)
-            existing_keys.add(f"{e}|{d}|{p}")
+            if r.get("email"):
+                existing_emails.add(r["email"].lower())
         if len(data) < page_size:
             break
         page += 1
@@ -2072,77 +1682,54 @@ def quote_import_a_replies():
         email = (reply.get("email") or "").lower()
         if not email:
             continue
-
-        reply_content = reply.get("reply_content", "") or ""
-        notes_text = reply.get("notes") or ""
-
-        # 整封回信级维度 (niche/traffic/permanence/country) 仍从全文抽, 作为每行兜底补充
-        qf = _extract_quote_fields(reply_content)
-
-        # domain 为空则跳过, 避免脏行 (空 domain 行会在前端显示为空白)
-        domain = (reply.get("domain") or (email.split("@")[-1] if "@" in email else "")).lower()
-        if not domain:
+        if not force and email in existing_emails:
             skipped += 1
             continue
+        existing_emails.add(email)
 
-        # 方案A: 按价格信号把回信切成多个报价块
-        blocks = split_quote_blocks(reply_content)
-
-        # notes 里的 v2_price 标签优先 (来自原始回信 Excel, 单价格场景)
+        # 价格优先从 reply_pool.notes 里的 v2_price:$XX 标签取 (来自原始回信 Excel, 避免丢价)
+        # 其次从回复正文解析 (修复: 进 quote pool 的 A类应有价格)
+        price_str = ""
+        notes_text = reply.get("notes") or ""
         m_v2 = _re.search(r"v2_price:\s*\$?\s*(\d[\d,]*\.?\d*)\s*(USD|EUR|GBP|INR|CNY)?", notes_text)
-        v2_price_str = ""
         if m_v2:
             pv = m_v2.group(1)
             pc = m_v2.group(2) or "USD"
-            v2_price_str = f"{pv} {pc}".strip()
+            price_str = f"{pv} {pc}".strip()
+        else:
+            pval, pcur = _parse_price_from_content(reply.get("reply_content", ""))
+            price_str = f"{pval} {pcur}".strip() if pval else ""
 
-        if not blocks:
-            # 无价回信: 保留1行待补价 (保持旧行为, 不丢回信)
-            price_str = v2_price_str
-            price_missing = not price_str
-            norm = _normalize_price_fields(price_str) if price_str else {"normalized_price": None, "normalized_currency": None}
-            dedup_key = f"{email}|{domain}|{price_str.strip().lower()}|||"
-            if not force and dedup_key in existing_keys:
-                skipped += 1
-                continue
-            existing_keys.add(dedup_key)
-            batch.append(_build_quote_row(reply, email, domain, qf, price_str, norm, price_missing, user))
-            if len(batch) >= BATCH_SIZE:
-                flush()
-            continue
+        batch.append({
+            "email": email,
+            "domain": (reply.get("domain") or email.split("@")[-1]).lower(),
+            "supplier": (reply.get("supplier") or "")[:200],
+            "contact_email": reply.get("contact_email") or email,
+            "niche": "",
+            "country": "",
+            "traffic": "",
+            "site_category": "",
+            "cooperation_type": "",
+            "price": price_str,
+            "link_rules": "",
+            "permanence": "",
+            "content": "",
+            "tat": "",
+            "payment": "",
+            "discount": "",
+            "additional_services": "",
+            "requirements": "",
+            "reply_id": reply.get("reply_id"),
+            "reply_content": (reply.get("reply_content") or "")[:8000],
+            "status": "Price TBD" if not price_str else "New",
+            "priority": 0,
+            "notes": f"Imported from A-class reply by {user}",
+            "discovered_by": user,
+            "discovered_at": now_iso(),
+        })
 
-        # 有报价块: 每块生成1行
-        for blk in blocks:
-            # 单块且整封有 v2_price 时, 优先用 v2_price (更可靠)
-            if len(blocks) == 1 and v2_price_str:
-                price_str = v2_price_str
-            else:
-                price_str = f"{blk['price']} {blk['currency']}".strip()
-            price_missing = not price_str
-            norm = _normalize_price_fields(price_str) if price_str else {"normalized_price": None, "normalized_currency": None}
-
-            # 块级维度优先, 回信级维度兜底
-            coop = blk["dims"].get("cooperation_type", "") or qf.get("cooperation_type", "")
-            cats = blk["dims"].get("categories", "") or qf.get("categories", "")
-            langs = blk["dims"].get("languages", "") or qf.get("languages", "")
-            country = blk["dims"].get("country", "") or qf.get("country", "")
-
-            dedup_key = f"{email}|{domain}|{price_str.strip().lower()}|{coop.lower()}|{langs.lower()}|{cats.lower()}"
-            if not force and dedup_key in existing_keys:
-                skipped += 1
-                continue
-            existing_keys.add(dedup_key)
-
-            row = _build_quote_row(reply, email, domain, qf, price_str, norm, price_missing, user)
-            # 用块级维度覆盖回信级
-            row["cooperation_type"] = coop
-            row["categories"] = cats
-            row["languages"] = langs
-            row["country"] = country
-            row["reply_content"] = (reply_content or "")[:8000]
-            batch.append(row)
-            if len(batch) >= BATCH_SIZE:
-                flush()
+        if len(batch) >= BATCH_SIZE:
+            flush()
 
     flush()
 
@@ -2155,41 +1742,6 @@ def quote_import_a_replies():
         "total_a_replies": len(all_replies),
         "quote_pool_total": db.count("quote_pool"),
     })
-
-
-@app.route("/api/quote/update", methods=["POST"])
-def quote_update():
-    """
-    人工补全/更新一条报价记录, 并推进状态闭环。
-    Body: {"email":"a@x.com", "fields":{可更新字段}, "status":"Quoted|Won|Lost|Price TBD"}
-    支持更新: niche/country/traffic/site_category/cooperation_type/price/link_rules/
-              permanence/content/tat/payment/discount/additional_services/requirements/status
-    """
-    data = request.get_json(force=True)
-    email = (data.get("email") or "").lower().strip()
-    if not email:
-        return jsonify({"error": "email required"}), 400
-
-    fields = data.get("fields", {})
-    allowed = {"niche", "country", "traffic", "site_category", "cooperation_type",
-               "price", "link_rules", "permanence", "content", "tat", "payment",
-               "discount", "additional_services", "requirements", "status", "priority"}
-    update = {}
-    for k, v in fields.items():
-        if k in allowed:
-            update[k] = v
-
-    if not update:
-        return jsonify({"error": "no valid fields"}), 400
-
-    update["reviewed_at"] = now_iso()
-    update["reviewed_by"] = data.get("user", "unknown")
-    resp, result = db.update("quote_pool", update, {"email": email})
-    if resp and hasattr(resp, "status") and resp.status in (200, 201, 204):
-        _log_operation("quote_update", data.get("user", "unknown"), "quote_pool", 1,
-                       f"Updated quote for {email}: {list(update.keys())}")
-        return jsonify({"updated": True, "email": email, "fields": list(update.keys())})
-    return jsonify({"updated": False, "error": str(result)}), 500
 
 
 @app.route("/api/quote/import", methods=["POST"])
@@ -2280,14 +1832,13 @@ def quote_import():
         if mapped:
             col_map[mapped] = col
 
-    # Get existing (email, domain, price) triples for dedup.
-    # Same email+domain with DIFFERENT price = distinct quote (keep both).
+    # Get existing emails for dedup
     existing = set()
     try:
         page, page_size = 0, 1000
         while True:
             resp = requests.get(
-                f"{SUPABASE_URL}/rest/v1/quote_pool?select=email,domain,price&limit={page_size}&offset={page*page_size}",
+                f"{SUPABASE_URL}/rest/v1/quote_pool?select=email&limit={page_size}&offset={page*page_size}",
                 headers=AUTH_HEADERS,
                 timeout=30
             )
@@ -2297,11 +1848,8 @@ def quote_import():
             if not data:
                 break
             for r in data:
-                e = (r.get('email') or '').lower()
-                d = (r.get('domain') or '').lower()
-                p = (r.get('price') or '').strip().lower()
-                if e:
-                    existing.add(f"{e}|{d}|{p}")
+                if r.get('email'):
+                    existing.add(r['email'].lower())
             if len(data) < page_size:
                 break
             page += 1
@@ -2337,28 +1885,14 @@ def quote_import():
         email = (row.get(col_map.get('email', ''), '') or '').strip().lower()
         if not email:
             continue
+        if email in existing:
+            skipped += 1
+            continue
+        existing.add(email)
 
         domain = (row.get(col_map.get('domain', ''), '') or '').strip().lower()
         if not domain and '@' in email:
             domain = email.split('@')[-1]
-        # domain 仍为空则跳过, 避免脏行
-        if not domain:
-            skipped += 1
-            continue
-
-        # price used for dedup triple (email, domain, price) — normalized form
-        raw_price = str(row.get(col_map.get('price', ''), '') or '').strip().lower()[:50]
-
-        # Dedup on (email, domain, price) triple — same email+domain with a
-        # DIFFERENT price is a distinct quote and must be kept.
-        dedup_key = f"{email}|{domain}|{raw_price}"
-        if dedup_key in existing:
-            skipped += 1
-            continue
-        existing.add(dedup_key)
-
-        # 自动标准化价格
-        norm = _normalize_price_fields(raw_price)
 
         # Parse priority as int
         priority = 0
@@ -2380,9 +1914,7 @@ def quote_import():
             "dr": (row.get(col_map.get('dr', ''), '') or '')[:50],
             "site_category": (row.get(col_map.get('site_category', ''), '') or '')[:50],
             "cooperation_type": (row.get(col_map.get('cooperation_type', ''), '') or '')[:50],
-            "price": raw_price,
-            "normalized_price": norm["normalized_price"],
-            "normalized_currency": norm["normalized_currency"],
+            "price": str(row.get(col_map.get('price', ''), '') or '')[:50],
             "link_rules": (row.get(col_map.get('link_rules', ''), '') or '')[:200],
             "permanence": (row.get(col_map.get('permanence', ''), '') or '')[:50],
             "content": (row.get(col_map.get('content', ''), '') or '')[:500],
@@ -2427,341 +1959,43 @@ def admin_clear_cache():
     CONFIG_CACHE.clear()
     return jsonify({"status": "ok", "message": "All caches cleared"})
 
-
-@app.route("/api/admin/ping", methods=["GET", "POST"])
-def admin_ping():
-    """Deploy test endpoint."""
-    return jsonify({"status": "ok", "supabase_url": SUPABASE_URL})
-
-
-@app.route("/api/admin/refresh-mv", methods=["POST"])
-def admin_refresh_mv():
-    """Trigger REFRESH MATERIALIZED VIEW pool_stats_mv via Supabase RPC.
-
-    面板 /api/stats 读 pool_stats_mv 物化视图, 该视图不会自动随
-    email_pool 等表 UPDATE 刷新。改完状态后调此端点即可让面板数字同步,
-    无需手动进 Supabase SQL Editor。
-    前置: 需在 Supabase SQL Editor 执行 create_refresh_mv_fn.sql 建好 RPC。
-    """
-    try:
-        resp = requests.post(
-            f"{SUPABASE_URL}/rest/v1/rpc/refresh_pool_stats_mv",
-            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
-            json={},
-            timeout=30,
-        )
-        if resp.status_code in (200, 201, 204):
-            # 清本地内存缓存, 强制下次 /api/stats 重读物化视图
-            global _cache
-            _cache.clear()
-            return jsonify({"status": "ok", "message": "pool_stats_mv refresh triggered"})
-        return jsonify({"status": "error", "code": resp.status_code, "detail": resp.text[:500]}), 502
-    except Exception as e:
-        return jsonify({"status": "error", "detail": str(e)}), 500
-
-@app.route("/api/admin/clean-empty", methods=["POST"])
-def admin_clean_empty():
-    """删除 domain 为空/NULL/纯空白 的脏行, 返回详情."""
-    body = request.get_json(silent=True) or {}
-    token = body.get("token", "")
-    if token != (os.environ.get("ADMIN_TOKEN") or "maisui-normalize-2026"):
-        return jsonify({"status": "error", "message": "unauthorized"}), 401
-    try:
-        WRITE_HEADERS = {**AUTH_HEADERS, "Content-Type": "application/json"}
-        # 查所有 domain 为空或 NULL 的行
-        results = []
-        for filt in ["domain=is.null", "domain=eq.", "domain=eq. "]:
-            r = requests.get(
-                f"{SUPABASE_URL}/rest/v1/quote_pool?select=id,domain,price&{filt}",
-                headers=AUTH_HEADERS, timeout=30)
-            if r.status_code == 200:
-                rows = r.json() if isinstance(r.json(), list) else []
-                results.extend(rows)
-        # 也查 domain 为空字符串的
-        r = requests.get(
-            f"{SUPABASE_URL}/rest/v1/quote_pool?select=id,domain,price",
-            headers=AUTH_HEADERS, timeout=30)
-        all_rows = r.json() if (r.status_code == 200 and isinstance(r.json(), list)) else []
-        empty_rows = [x for x in all_rows if isinstance(x, dict) and not x.get("domain", "") or not str(x.get("domain", "")).strip()]
-        # 合并去重
-        seen = set()
-        unique_empty = []
-        for row in empty_rows + results:
-            rid = row.get("id")
-            key = rid if rid is not None else f"domain:{repr(row.get('domain'))}"
-            if key not in seen:
-                seen.add(key)
-                unique_empty.append(row)
-        # 删除: 有 id 用 id, 无 id 用 domain=eq.(空串) 或 id=is.null
-        del_ok = 0
-        del_fail = 0
-        for row in unique_empty:
-            rid = row.get("id")
-            if rid is not None:
-                dr = requests.delete(
-                    f"{SUPABASE_URL}/rest/v1/quote_pool?id=eq.{rid}",
-                    headers=WRITE_HEADERS, timeout=30)
-            else:
-                # id 为空/NULL 的脏行, 用 domain 空串条件删除
-                dr = requests.delete(
-                    f"{SUPABASE_URL}/rest/v1/quote_pool?domain=eq.",
-                    headers=WRITE_HEADERS, timeout=30)
-            if dr.status_code in (200, 204):
-                del_ok += 1
-            else:
-                del_fail += 1
-        return jsonify({
-            "status": "ok",
-            "found_empty": len(unique_empty),
-            "deleted": del_ok,
-            "failed": del_fail,
-            "sample": [{"id": r.get("id"), "domain": repr(r.get("domain")), "price": repr(r.get("price"))} for r in unique_empty[:5]],
-        })
-    except Exception as e:
-        import traceback
-        return jsonify({"status": "error", "message": str(e), "traceback": traceback.format_exc()}), 500
-
-@app.route("/api/admin/delete-blank-row", methods=["POST"])
-def admin_delete_blank_row():
-    """专门删除 id 为 NULL / domain 为空串 的脏行."""
-    body = request.get_json(silent=True) or {}
-    token = body.get("token", "")
-    if token != (os.environ.get("ADMIN_TOKEN") or "maisui-normalize-2026"):
-        return jsonify({"status": "error", "message": "unauthorized"}), 401
-    try:
-        WRITE_HEADERS = {**AUTH_HEADERS, "Content-Type": "application/json"}
-        # 1. 先用 id=is.null 删
-        r1 = requests.delete(
-            f"{SUPABASE_URL}/rest/v1/quote_pool?id=is.null",
-            headers=WRITE_HEADERS, timeout=30)
-        del1 = r1.status_code in (200, 204)
-        # 2. 再用 domain=eq. 删（空字符串）
-        r2 = requests.delete(
-            f"{SUPABASE_URL}/rest/v1/quote_pool?domain=eq.",
-            headers=WRITE_HEADERS, timeout=30)
-        del2 = r2.status_code in (200, 204)
-        # 3. 也试 domain is null
-        r3 = requests.delete(
-            f"{SUPABASE_URL}/rest/v1/quote_pool?domain=is.null",
-            headers=WRITE_HEADERS, timeout=30)
-        del3 = r3.status_code in (200, 204)
-        return jsonify({
-            "status": "ok",
-            "id_null_deleted": del1,
-            "id_null_code": r1.status_code,
-            "domain_empty_deleted": del2,
-            "domain_empty_code": r2.status_code,
-            "domain_null_deleted": del3,
-            "domain_null_code": r3.status_code,
-        })
-    except Exception as e:
-        import traceback
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-@app.route("/api/admin/verify-key", methods=["POST"])
-def admin_verify_key():
-    """Verify a given Supabase key by hitting the REST API (GET + PATCH test)."""
-    body = request.get_json(silent=True) or {}
-    test_key = body.get("key", "")
-    if not test_key:
-        return jsonify({"status": "error", "message": "no key provided"}), 400
-    hdrs = {"apikey": test_key, "Authorization": f"Bearer {test_key}", "Content-Type": "application/json"}
-    try:
-        # GET test
-        r_get = requests.get(
-            f"{SUPABASE_URL}/rest/v1/quote_pool?select=count&limit=1",
-            headers=hdrs, timeout=20)
-        # PATCH test (try to set normalized_price on first row with null value)
-        r_patch = requests.patch(
-            f"{SUPABASE_URL}/rest/v1/quote_pool?normalized_price=is.null&limit=1",
-            json={"normalized_price": -999.99},
-            headers={**hdrs, "Prefer": "return=minimal"}, timeout=20)
-        return jsonify({
-            "status": "ok",
-            "get_code": r_get.status_code,
-            "get_body": r_get.text[:200],
-            "patch_code": r_patch.status_code,
-            "patch_body": r_patch.text[:300],
-        })
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-
-@app.route("/api/admin/raw-count", methods=["GET"])
-def admin_raw_count():
-    """直接用 service_role key 打各表真实 count，绕过前端 db 封装。"""
-    SR_KEY = (
-        SUPABASE_ANON_KEY  # from config.py (authoritative, can be rotated)
-        or os.environ.get("SUPABASE_SERVICE_KEY")
-        or os.environ.get("SUPABASE_ANON_KEY")
-        or ""  # last resort; will fail downstream
-    )
-    hdrs = {"apikey": SR_KEY, "Authorization": f"Bearer {SR_KEY}"}
-    tables = ["domain_pool", "supplier_pool", "quote_pool", "reply_pool",
-              "email_pool", "operation_log", "config"]
-    out = {}
-    for t in tables:
-        try:
-            r = requests.get(
-                f"{SUPABASE_URL}/rest/v1/{t}?select=count",
-                headers=hdrs, timeout=20)
-            out[t] = {"code": r.status_code, "body": r.text[:150]}
-        except Exception as e:
-            out[t] = {"code": "ERR", "body": str(e)[:100]}
-    return jsonify(out)
-
-@app.route("/api/admin/normalize-prices", methods=["POST"])
-def admin_normalize_prices():
-    """一次性存量修复 (在 Render/后端环境执行, 绕过沙箱对 supabase.co 的屏蔽):
-      A. 对 normalized_price 为空的行, 从 price 文本提取金额+货币填 normalized_price/normalized_currency
-      B. 删除 domain 为 NULL 的脏行 (前端空白行根因)
-    返回处理统计。加简单口令防护防止滥用。
-    写操作使用 service_role key 绕过 RLS (anon key 无 UPDATE/DELETE 权限)。
-    """
-    body = request.get_json(silent=True) or {}
-    token = body.get("token", "")
-    if token != (os.environ.get("ADMIN_TOKEN") or "maisui-normalize-2026"):
-        return jsonify({"status": "error", "message": "unauthorized"}), 401
-
-    # 写操作也用 AUTH_HEADERS (anon key) — RLS policy 已允许 anon UPDATE/DELETE
-    # service_role key 在此项目上 PATCH 返回 401 (原因不明), 改回 anon
-    WRITE_HEADERS = {**AUTH_HEADERS, "Content-Type": "application/json"}
-
-    import traceback
-    try:
-        # B. 删空 domain 脏行
-        null_resp = requests.get(
-            f"{SUPABASE_URL}/rest/v1/quote_pool?select=id,domain&domain=is.null",
-            headers=AUTH_HEADERS, timeout=30)
-        null_rows = null_resp.json() if null_resp.status_code == 200 else []
-        if not isinstance(null_rows, list):
-            null_rows = []
-        null_ids = [r["id"] for r in null_rows if isinstance(r, dict) and r.get("domain") is None]
-        del_ok = 0
-        for i in null_ids:
-            r = requests.delete(
-                f"{SUPABASE_URL}/rest/v1/quote_pool?id=eq.{i}",
-                headers=WRITE_HEADERS, timeout=30)
-            if r.status_code in (200, 204):
-                del_ok += 1
-
-        # A. 标准化 normalized_price 为空的行
-        price_resp = requests.get(
-            f"{SUPABASE_URL}/rest/v1/quote_pool?select=domain,price,normalized_price&normalized_price=is.null&limit=1000",
-            headers=AUTH_HEADERS, timeout=30)
-        rows = price_resp.json() if price_resp.status_code == 200 else []
-        if not isinstance(rows, list):
-            rows = []
-        plan = []
-        for x in rows:
-            if not isinstance(x, dict):
-                continue
-            p = x.get("price")
-            if p not in (None, "") and str(p).strip() != "":
-                result = _normalize_price_fields(str(p))
-                np_ = result.get("normalized_price")
-                nc = result.get("normalized_currency")
-                if np_ is not None:
-                    plan.append((x["domain"], np_, nc))
-        fill_ok = 0
-        fail = 0
-        fail_details = []
-        for d, np_, nc in plan:
-            r = requests.patch(
-                f"{SUPABASE_URL}/rest/v1/quote_pool?domain=eq.{d}",
-                json={"normalized_price": np_, "normalized_currency": nc},
-                headers={**WRITE_HEADERS, "Prefer": "return=minimal"}, timeout=30)
-            if r.status_code in (200, 204):
-                fill_ok += 1
-            else:
-                fail += 1
-                fail_details.append({"domain": d, "status": r.status_code, "body": r.text[:200]})
-        return jsonify({
-            "status": "ok",
-            "null_domain_deleted": del_ok,
-            "null_domain_total": len(null_ids),
-            "normalized_filled": fill_ok,
-            "normalized_failed": fail,
-            "normalized_total": len(plan),
-            "fail_details": fail_details[:5],
-        })
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e), "traceback": traceback.format_exc()}), 500
-
 @app.route("/api/stats", methods=["GET"])
 def get_stats():
-    """Aggregated statistics (cached 60s). Read from pooled stats materialized view
-    (pool_stats_mv) — 1 query replaces 20+ serial count() round-trips to Supabase."""
+    """Aggregated statistics (cached 60s). Optimized to avoid slow full-table scans."""
 
     def _fetch():
-        # 优先读物化视图 (已聚合, 秒回)
-        try:
-            resp = requests.get(
-                f"{SUPABASE_URL}/rest/v1/pool_stats_mv?select=*&limit=1",
-                headers=AUTH_HEADERS,
-                timeout=20,
-            )
-            if resp.status_code == 200 and resp.json():
-                mv = resp.json()[0]
-                return {
-                    "domain_total": mv.get("domain_total", 0),
-                    "domain_new": mv.get("domain_new", 0),
-                    "domain_claimed": mv.get("domain_claimed", 0),
-                    "domain_imported": 0,
-                    "domain_completed": mv.get("domain_contacted", 0),
-                    "domain_exported": mv.get("domain_replied", 0),
-                    "domain_unique_total": mv.get("domain_total", 0),
-                    "domain_unique_new": mv.get("domain_new", 0),
-                    "domain_unique_claimed": mv.get("domain_claimed", 0),
-                    "domain_unique_contacted": mv.get("domain_contacted", 0),
-                    "domain_unique_replied": mv.get("domain_replied", 0),
-                    "domain_today_new": 0,
-                    "email_total": mv.get("email_total", 0),
-                    "email_unsent": mv.get("email_unsent", 0),
-                    "email_assigned": mv.get("email_assigned", 0),
-                    "email_sent": (mv.get("email_sent", 0) or 0) + (mv.get("email_exported", 0) or 0),
-                    "email_bounce": mv.get("email_bounce", 0),
-                    "reply_total": mv.get("reply_total", 0),
-                    "reply_unread": mv.get("reply_unread", 0),
-                    "reply_a": mv.get("reply_a", 0),
-                    "reply_b": mv.get("reply_b", 0),
-                    "reply_c": mv.get("reply_c", 0),
-                    "reply_today": 0,
-                    "reply_today_a": 0,
-                    "reply_today_b": 0,
-                    "reply_today_c": 0,
-                    "quote_total": mv.get("quote_total", 0),
-                    "quote_today_new": 0,
-                    "quote_suppliers": 0,
-                    "refreshed_at": str(mv.get("refreshed_at", "")),
-                }
-        except Exception as e:
-            print(f"[WARN] pool_stats_mv read failed: {e}, falling back to live count")
-
-        # Fallback: 物化视图不可用时退化到逐表 count (原逻辑)
+        # Domain counts by status — each count() hits Supabase content-range (fast)
         domain_total = db.count("domain_pool")
         domain_new = db.count("domain_pool", filters={"collection_status": "New"})
         domain_claimed = db.count("domain_pool", filters={"collection_status": "Claimed"})
         domain_contacted = db.count("domain_pool", filters={"collection_status": "Contacted"})
         domain_replied = db.count("domain_pool", filters={"collection_status": "Replied"})
+
+        # Skip _count_unique_domains() — it paginates 167K rows (~30-60s).
+        # Use total count as approximate unique count for the dashboard.
         domain_unique_total = domain_total
         domain_unique_new = domain_new
         domain_unique_claimed = domain_claimed
         domain_unique_contacted = domain_contacted
         domain_unique_replied = domain_replied
 
+        # Email pool stats — from email_pool table (independent table)
+        # send_status: UNSENT = available, SENT = exported, Bounce = bounced
         try:
             email_total = db.count("email_pool")
             email_unsent = db.count("email_pool", filters={"send_status": "UNSENT"})
             email_sent = db.count("email_pool", filters={"send_status": "SENT"})
             email_exported = db.count("email_pool", filters={"send_status": "EXPORTED"})
             email_bounce = db.count("email_pool", filters={"send_status": "Bounce"})
+            # claimed_by may not exist on email_pool; wrap safely
             try:
                 email_assigned = db.count("email_pool", filters={"claimed_by": "not.is.null"})
             except Exception:
                 email_assigned = 0
+            # SENT + EXPORTED both represent "already used / sent"
             email_sent_total = email_sent + email_exported
         except Exception:
+            # Fallback to domain_pool mapping if email_pool table doesn't exist
             email_total = domain_total
             email_unsent = domain_new + domain_claimed
             email_sent_total = domain_contacted
@@ -2769,6 +2003,8 @@ def get_stats():
             email_bounce = 0
 
         reply_total = reply_a = reply_b = reply_c = reply_unread = 0
+        reply_today_a = reply_today_b = reply_today_c = 0
+        yesterday_str = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
         try:
             reply_total = db.count("reply_pool")
             if reply_total > 0:
@@ -2776,6 +2012,32 @@ def get_stats():
                 reply_b = db.count("reply_pool", filters={"category": "B"})
                 reply_c = db.count("reply_pool", filters={"category": "C"})
                 reply_unread = db.count("reply_pool", filters={"status": "New"})
+                # Today's new replies (discovered_at > yesterday midnight UTC)
+                try:
+                    reply_today_a = db.count("reply_pool", filters={"category": "A", "discovered_at": f"gt.{yesterday_str}"})
+                    reply_today_b = db.count("reply_pool", filters={"category": "B", "discovered_at": f"gt.{yesterday_str}"})
+                    reply_today_c = db.count("reply_pool", filters={"category": "C", "discovered_at": f"gt.{yesterday_str}"})
+                except Exception:
+                    pass
+            else:
+                # Fallback to supplier_pool legacy data
+                reply_total = db.count("supplier_pool", filters={"status": "Replied"})
+                if reply_total > 0:
+                    suppliers = db.select(
+                        "supplier_pool",
+                        select="notes",
+                        filters={"status": "Replied"},
+                        limit=500,
+                    )
+                    reply_a = sum(1 for s in suppliers if _parse_reply_category(s.get("notes")) == "A")
+                    reply_b = sum(1 for s in suppliers if _parse_reply_category(s.get("notes")) == "B")
+                    reply_c = sum(1 for s in suppliers if _parse_reply_category(s.get("notes")) == "C")
+                    if reply_total > 500 and suppliers:
+                        scale = reply_total / len(suppliers)
+                        reply_a = int(reply_a * scale)
+                        reply_b = int(reply_b * scale)
+                        reply_c = int(reply_c * scale)
+                    reply_unread = reply_total
         except Exception:
             pass
 
@@ -2805,9 +2067,9 @@ def get_stats():
             "reply_b": reply_b,
             "reply_c": reply_c,
             "reply_today": 0,
-            "reply_today_a": 0,
-            "reply_today_b": 0,
-            "reply_today_c": 0,
+            "reply_today_a": reply_today_a,
+            "reply_today_b": reply_today_b,
+            "reply_today_c": reply_today_c,
             "quote_total": quote_total,
             "quote_today_new": 0,
             "quote_suppliers": 0,
@@ -2931,53 +2193,38 @@ def log_list():
     to the legacy config JSON blob (pre-migration). Results are merged,
     de-duplicated, sorted newest-first, then filtered/paginated.
     """
-    limit = min(int(request.args.get("limit", 100)), 200000)
+    limit = min(int(request.args.get("limit", 100)), 1000)
     op_type = request.args.get("type", "")
     user = request.args.get("user", "")
 
     logs = []
+    db_error = None
 
-    # 1) New table — use service_role key to bypass PostgREST db_max_rows (1000) cap.
-    #    Cursor-paginate over op_time DESC so we always retrieve the FULL log set.
+    # 1) New table
     try:
-        SR_KEY = (
-            SUPABASE_ANON_KEY  # from config.py (authoritative, can be rotated)
-            or os.environ.get("SUPABASE_SERVICE_KEY")
-            or os.environ.get("SUPABASE_ANON_KEY")
-            or ""  # last resort; will fail downstream
+        rows = db.select(
+            "operation_log",
+            select="log_id,op_time,type,username,pool,count,detail",
+            order="op_time",
+            ascending=False,
+            limit=limit * 2,  # over-fetch so filter still has enough after merge
         )
-        SR_HEADERS = {"apikey": SR_KEY, "Authorization": f"Bearer {SR_KEY}"}
-        fetched = 0
-        PAGE = 1000
-        last_id = None
-        while fetched < 200000:
-            # Cursor pagination on log_id (int serial, stable) — avoids PostgREST tz-string
-            # comparison bugs on op_time (old rows stored as "2026-... 00:00" with a space).
-            q = f"{SUPABASE_URL}/rest/v1/operation_log?select=log_id,op_time,type,username,pool,count,detail&order=log_id.desc&limit={PAGE}"
-            if last_id is not None:
-                q += f"&log_id=lt.{last_id}"
-            resp = requests.get(q, headers=SR_HEADERS, timeout=30)
-            if resp.status_code != 200:
-                break
-            rows = resp.json()
-            if not isinstance(rows, list) or not rows:
-                break
-            for r in rows:
-                logs.append({
-                    "log_id": "op_" + str(r.get("log_id")),
-                    "time": _utc_to_bj(str(r.get("op_time"))),
-                    "type": r.get("type"),
-                    "user": r.get("username"),
-                    "table": r.get("pool"),
-                    "count": r.get("count", 0),
-                    "detail": r.get("detail") or "",
-                })
-            fetched += len(rows)
-            if len(rows) < PAGE:
-                break
-            last_id = rows[-1]["log_id"]
-    except Exception:
-        pass
+        for r in rows:
+            logs.append({
+                "log_id": "op_" + str(r.get("log_id")),
+                "time": _utc_to_bj(str(r.get("op_time"))),
+                "type": r.get("type"),
+                "user": r.get("username"),
+                "table": r.get("pool"),
+                "count": r.get("count", 0),
+                "detail": r.get("detail") or "",
+            })
+    except Exception as e:
+        # 不再静默吞错：记录错误并返回明确 error 字段，前端据此显示「加载失败」而非假 0
+        db_error = f"operation_log 读取失败: {type(e).__name__}: {e}"
+        import traceback
+        print("[log_list] DB ERROR:", db_error)
+        print(traceback.format_exc())
 
     # 2) Legacy config blob (pre-migration / fallback)
     try:
@@ -3015,7 +2262,16 @@ def log_list():
         if "time" in l:
             l["time"] = _utc_to_bj(l["time"])
 
-    return jsonify({"logs": unique, "count": len(unique)})
+    # 若数据库读取失败且结果为空，明确告知前端（避免假 0 误导）
+    if db_error and len(unique) == 0:
+        return jsonify({
+            "logs": [],
+            "count": 0,
+            "error": db_error,
+            "ok": False,
+        }), 200
+
+    return jsonify({"logs": unique, "count": len(unique), "ok": True})
 
 
 @app.route("/api/log/delete", methods=["POST"])
@@ -3461,16 +2717,10 @@ tr.selected-row td{background:#e8f4fd}
   <div class="cards" id="quote-cards"></div>
   <script>setTimeout(()=>{try{loadQuoteTable();}catch(e){console.error('preload quote failed',e);}},300);</script>
   <div class="actions">
-    <span style="font-size:12px;color:var(--muted);margin-right:4px">Export CSV:</span>
-    <button class="btn" onclick="exportQuotes('all')">All</button>
-    <button class="btn" onclick="exportQuotes('ready')">Normal only</button>
-    <button class="btn" onclick="exportQuotes('abnormal')">Abnormal only</button>
+    <button class="btn" id="quote-export-btn" onclick="exportQuotes()">Export CSV</button>
     <button class="btn red" id="quote-delete-btn" onclick="deleteSelectedQuotes()" style="display:none">Delete Selected (<span id="quote-sel-count">0</span>)</button>
     <label style="font-size:12px;color:var(--muted)">User</label><input id="q-user" placeholder="your name" style="width:100px" onchange="saveUserName()">
     <label style="font-size:12px;color:var(--muted)">User Filter</label><select id="q-user-filter" onchange="loadQuoteTable()"><option value="">All Users</option></select>
-    <label style="font-size:12px;color:var(--muted)"><svg style="vertical-align:-2px;width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg> Search</label>
-    <input id="q-search" placeholder="domain, supplier, email, keyword..." style="width:200px;padding:4px 8px;font-size:12px;border:0.5px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text)" onkeydown="if(event.key==='Enter'){QUOTE_PAGER.page=1;loadQuoteTable()}">
-    <button class="btn" style="font-size:11px;padding:4px 10px" onclick="QUOTE_PAGER.page=1;loadQuoteTable()">Search</button>
     <button class="btn green" onclick="importARepliesToQuotes()">Import A-class replies</button>
     <button class="btn" onclick="toggleQuoteImport()">Import from File</button>
     <span id="quote-import-result" style="font-size:12px;color:var(--muted)"></span>
@@ -3485,37 +2735,24 @@ tr.selected-row td{background:#e8f4fd}
     <button class="btn" style="font-size:11px" onclick="downloadQuoteTemplate()">Download Template</button>
     <span id="quote-import-file-result" style="font-size:12px;color:var(--muted)"></span>
   </div>
-  <div style="overflow-x:auto;max-height:calc(100vh - 320px);overflow-y:auto">
-  <div style="margin-bottom:4px;text-align:right">
-    <label style="font-size:11.5px;color:var(--muted);cursor:pointer" onclick="toggleQuoteCols()">
-      <input type="checkbox" id="q-show-all-cols"> Hide low-freq columns (DR/DA/Traffic/TAT/etc.)
-    </label>
-  </div>
+  <div style="overflow-x:auto">
   <style>
-    #quote-table{font-size:12px;border-collapse:collapse;width:auto;min-width:100%}
-    #quote-table th,#quote-table td{padding:4px 7px;vertical-align:middle;line-height:1.25}
-    #quote-table tbody tr{min-height:26px}
-    #quote-table th{white-space:nowrap;font-size:11px;font-weight:600}
-    #quote-table th.col-link{width:160px}
-    #quote-table th.col-keywords{width:120px}
-    #quote-table th.col-linkrules{width:140px}
-    #quote-table th.col-contact{width:150px}
-    #quote-table td{font-size:12px}
-    /* All columns visible by default (was hidden, reverted per user request) */
-    .q-col-extra{display:table-cell}
-    body.hide-quote-extra-cols .q-col-extra{display:none}
+    #quote-table{font-size:12px;border-collapse:collapse;width:100%}
+    #quote-table th,#quote-table td{padding:12px 10px;vertical-align:middle}
+    #quote-table tbody tr{min-height:38px}
+    #quote-table th{white-space:nowrap}
+    #quote-table th.col-link{width:180px}
+    #quote-table th.col-keywords{width:160px}
+    #quote-table th.col-linkrules{width:200px}
+    #quote-table th.col-contact{width:200px}
   </style>
   <table id="quote-table">
     <thead><tr>
       <th><input type="checkbox" class="chk-all" onchange="toggleQuoteAll(this)" title="Select All"></th><th>#</th>
-      <th class="col-link">Link</th><th>Price</th><th>Backlink Type</th>
-      <th class="q-col-extra">DR</th><th class="q-col-extra">DA</th>
-      <th class="q-col-extra">Ref. Domains</th><th class="q-col-extra">Traffic</th><th>Country</th>
-      <th class="col-keywords">Keywords</th>
-      <th class="q-col-extra">Categories</th><th class="q-col-extra">Languages</th>
-      <th class="q-col-extra">TAT</th><th>Permanence</th><th class="col-contact">Contact</th>
-      <th class="q-col-extra">Cooperation</th><th class="q-col-extra">Payment</th>
-      <th class="col-linkrules">Link Rules</th><th>Status</th>
+      <th class="col-link">Link</th><th>Price</th><th>Backlink Type</th><th>DR</th><th>DA</th>
+      <th>Ref. Domains</th><th>Traffic</th><th>Country</th><th class="col-keywords">Keywords</th>
+      <th>Categories</th><th>Languages</th><th>TAT</th><th>Permanence</th><th class="col-contact">Contact</th>
+      <th>Cooperation</th><th>Payment</th><th>Discount</th><th class="col-linkrules">Link Rules</th><th>Status</th>
     </tr></thead><tbody></tbody>
   </table>
   </div>
@@ -3526,8 +2763,7 @@ tr.selected-row td{background:#e8f4fd}
     <button class="btn" onclick="changeQuotePage(1)">Next</button>
     <label style="font-size:12px;color:var(--muted);margin-left:16px">Per page:</label>
     <select id="quote-page-size" onchange="onQuotePageSizeChange()" style="padding:4px 8px;font-size:12px;border:0.5px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text)">
-      <option value="10">10</option>
-      <option value="20" selected>20</option>
+      <option value="10" selected>10</option>
       <option value="20">20</option>
       <option value="50">50</option>
     </select>
@@ -3594,7 +2830,7 @@ function esc(s,n=80){return String(s||'').replace(/</g,'&lt;').slice(0,n)}
 const DOMAIN_PAGER={page:1,pageSize:10};
 const EMAIL_PAGER ={page:1,pageSize:10};
 const REPLY_PAGER ={page:1,pageSize:10,category:''};
-const QUOTE_PAGER ={page:1,pageSize:20};
+const QUOTE_PAGER ={page:1,pageSize:10};
 
 // ── User name via localStorage ──
 function getUserName(){
@@ -3628,10 +2864,15 @@ function saveUserName(){
     }
   }
 }
-// NOTE: 不再在页面加载时把 localStorage 自动灌入输入框。
-// 旧逻辑会让上一个用户(如 leo)的名字残留预填，导致下一个用户未手动修改时
-// getUserName() 取到残留名、日志/claimed_by 误记成 leo。
-// 现在输入框默认空，谁操作谁必须自己填；saveUserName() 仍会记住手动填写的名字。
+// Load saved user name on page load
+(function(){
+  const saved=localStorage.getItem('shared_pool_user');
+  if(saved){
+    ['d-user','e-user','r-user','q-user'].forEach(id=>{
+      const el=document.getElementById(id); if(el) el.value=saved;
+    });
+  }
+})();
 
 // ── Import panel ──
 function toggleImport(){
@@ -3900,11 +3141,7 @@ async function loadQuoteTable(){
   const limit=QUOTE_PAGER.pageSize;
   const offset=(QUOTE_PAGER.page-1)*limit;
   const userFilter=document.getElementById('q-user-filter').value;
-  const searchVal=(document.getElementById('q-search')||{}).value||'';
-  let url=API+'/api/quote/list?limit='+limit+'&offset='+offset;
-  if(userFilter) url+='&supplier='+encodeURIComponent(userFilter);
-  if(searchVal.trim()) url+='&search='+encodeURIComponent(searchVal.trim());
-  const r=await fetch(url).then(r=>r.json());
+  const r=await fetch(API+'/api/quote/list?limit='+limit+'&offset='+offset+(userFilter?'&supplier='+encodeURIComponent(userFilter):'')).then(r=>r.json());
   const total=r.total||0;
   const maxPage=Math.max(1,Math.ceil(total/limit));
   if(QUOTE_PAGER.page>maxPage){QUOTE_PAGER.page=maxPage;}
@@ -3915,35 +3152,15 @@ async function loadQuoteTable(){
   // Quote Pool columns (Jenny template + DR/DA/Traffic/Keywords etc.)
   // All columns always shown; empty if no data for that row.
   let th='<tr><th><input type="checkbox" class="chk-all" onchange="toggleQuoteAll(this)" title="Select All"></th><th>#</th>'+
-    '<th class="col-link">Link</th><th>Price</th><th>Backlink Type</th>'+
-    '<th class="q-col-extra">DR</th><th class="q-col-extra">DA</th>'+
-    '<th class="q-col-extra">Ref. Domains</th><th class="q-col-extra">Traffic</th><th>Country</th>'+
-    '<th class="col-keywords">Keywords</th>'+
-    '<th class="q-col-extra">Categories</th><th class="q-col-extra">Languages</th>'+
-    '<th class="q-col-extra">TAT</th><th>Permanence</th><th class="col-contact">Contact</th>'+
-    '<th class="q-col-extra">Cooperation</th><th class="q-col-extra">Payment</th>'+
-    '<th class="col-linkrules">Link Rules</th><th>Status</th></tr>';
+    '<th class="col-link">Link</th><th>Price</th><th>Backlink Type</th><th>DR</th><th>DA</th>'+
+    '<th>MeUp价格</th><th>Bazoom价格</th>'+
+    '<th>Ref. Domains</th><th>Traffic</th><th>Country</th><th class="col-keywords">Keywords</th>'+
+    '<th>Categories</th><th>Languages</th><th>TAT</th><th>Permanence</th><th class="col-contact">Contact</th>'+
+    '<th>Cooperation</th><th>Payment</th><th>Discount</th><th class="col-linkrules">Link Rules</th><th>Status</th></tr>';
 
   const mappedFields=new Set(['domain','price','cooperation_type','traffic','country','site_category','niche','tat','permanence','contact_email','email','supplier','da','dr','ref_domains','keywords','categories','languages','link_rules','content','payment','discount','additional_services','requirements','reply_content','status','notes','discovered_by','discovered_at','quote_id','reply_id','priority','id']);
 
-  // 空壳行判定（与后端 _quote_is_empty 保持一致）：
-  //   有 reply_id 或 reply_content 非空 → 视为有用数据（带原始回信原文），不为空壳；
-  //   否则 13 个维度字段全空 → 空壳，自动沉底。
-  const _EMPTY_DIMS=['dr','da','ref_domains','traffic','country','keywords','categories','languages','cooperation_type','payment','link_rules','permanence','content'];
-  function _isEmpty(q){
-    if(q.reply_id != null && q.reply_id !== '' && q.reply_id !== 0) return false;
-    const rc = q.reply_content;
-    if(rc != null && String(rc).trim() !== '') return false;
-    let n=0;
-    for(const k of _EMPTY_DIMS){const v=q[k]; if(v!=null && String(v).trim()!=='') n++;}
-    return n < 1;
-  }
-  // 复制并标注，按"空壳置底"重排（非空行保持原 discovered_at DESC 顺序）
-  const _ranked = allQuotes.map((q, i) => ({ q, i, _empty: _isEmpty(q) }));
-  _ranked.sort((a, b) => (a._empty === b._empty) ? (a.i - b.i) : (a._empty ? 1 : -1));
-  const _ordered = _ranked.map(x => x.q);
-
-  let tb=(_ordered).map((q,i)=>{
+  let tb=(allQuotes).map((q,i)=>{
       const otherParts=[];
       for(const [k,v] of Object.entries(q)){
         if(!mappedFields.has(k.toLowerCase()) && v!=null && String(v).trim()) otherParts.push(k+': '+v);
@@ -3954,33 +3171,29 @@ async function loadQuoteTable(){
       const rawContact=q.contact_email||q.email||'';
       const displayContact=rawContact.replace(/\+[^@]+(?=@)/,'');
 
-      // 异常行背景色
-      const _ds = (q.data_status||'').trim();
-      let _rowStyle = '';
-      if (_ds === 'NEED_DOMAIN') _rowStyle = 'background:#fff0f0';        // 浅红
-      else if (_ds === 'NEED_PRICE') _rowStyle = 'background:#fff8e0';    // 浅黄
-      else if (_ds && _ds !== 'READY') _rowStyle = 'background:#fff4e0';  // 浅橙(NEED_REVIEW等)
-
-      return `<tr data-idx="${i}" data-id="${q.quote_id||q.id}"${_rowStyle ? ` style="${_rowStyle}"` : ''}>
+      return `<tr data-idx="${i}" data-id="${q.quote_id||q.id}">
         <td><input type="checkbox" class="chk-row" onchange="onQuoteCheck(this,${q.quote_id||q.id},${i})"></td>
         <td style="color:var(--muted);font-size:10.5px;text-align:center">${_getGlobalIdx(QUOTE_PAGER.page,limit,i)}</td>
         <td><a href="http://${esc(q.domain)}" target="_blank">${esc(q.domain)}</a></td>
-        <td style="white-space:nowrap">${esc((function(){var n=parseFloat(q.normalized_price);if(!isNaN(n)){var d=n%1===0?String(n):String(n);return d+' '+(q.normalized_currency||'USD')}return q.price||''})())}</td>
-        <td>${esc(q.price_type || q.site_category || q.niche || '')}</td>
-        <td class="q-col-extra">${esc(q.dr||'')}</td>
-        <td class="q-col-extra">${esc(q.da||'')}</td>
-        <td class="q-col-extra">${esc(q.ref_domains||'')}</td>
-        <td class="q-col-extra">${esc(q.traffic||'')}</td>
+        <td style="white-space:nowrap">${q.price ? esc(q.price) : '<span style="color:#aaa">N/A</span>'}</td>
+        <td>${esc(q.site_category||q.niche||'')}</td>
+        <td>${esc(q.dr||'')}</td>
+        <td>${esc(q.da||'')}</td>
+        <td>${q.meup_price!=null?esc(q.meup_price):'<span style="color:#aaa">—</span>'}</td>
+        <td>${q.bazoom_price!=null?esc(q.bazoom_price):'<span style="color:#aaa">—</span>'}</td>
+        <td>${esc(q.ref_domains||'')}</td>
+        <td>${esc(q.traffic||'')}</td>
         <td>${esc(q.country||'')}</td>
-        <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(q.keywords||'',200)}">${esc(q.keywords||'')}</td>
-        <td class="q-col-extra" style="max-width:100px;overflow:hidden;text-overflow:ellipsis">${esc(q.categories||'')}</td>
-        <td class="q-col-extra">${esc(q.languages||'')}</td>
-        <td class="q-col-extra">${esc(q.tat||'')}</td>
+        <td style="max-width:100px;overflow:hidden;text-overflow:ellipsis" title="${esc(q.keywords||'',200)}">${esc(q.keywords||'')}</td>
+        <td style="max-width:100px;overflow:hidden;text-overflow:ellipsis">${esc(q.categories||'')}</td>
+        <td>${esc(q.languages||'')}</td>
+        <td>${esc(q.tat||'')}</td>
         <td>${esc(q.permanence||'')}</td>
         <td title="${esc(rawContact)}">${esc(displayContact)}</td>
-        <td class="q-col-extra">${esc(q.cooperation_type||'')}</td>
-        <td class="q-col-extra">${esc(q.payment||'')}</td>
-        <td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(q.link_rules||'',300)}">${esc(q.link_rules||'')}</td>
+        <td>${esc(q.cooperation_type||'')}</td>
+        <td>${esc(q.payment||'')}</td>
+        <td>${esc(q.discount||'')}</td>
+        <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis" title="${esc(q.link_rules||'',300)}">${esc(q.link_rules||'')}</td>
         <td><span class="status-${(q.status||'New')}">${esc(q.status||'New')}</span></td>
       </tr>`;
     }).join('');
@@ -4010,9 +3223,6 @@ function onQuotePageSizeChange(){
   QUOTE_PAGER.pageSize=parseInt(document.getElementById('quote-page-size').value)||50;
   QUOTE_PAGER.page=1;
   loadQuoteTable();
-}
-function toggleQuoteCols(){
-  document.body.classList.toggle('hide-quote-extra-cols',document.getElementById('q-show-all-cols').checked);
 }
 
 function toggleEmailImport(){
@@ -4106,28 +3316,69 @@ function _logPoolShort(type) {
 }
 
 async function refreshLogs() {
-  const url = API + '/api/log/list?limit=100000';
-  const r = await fetch(url).then(r => r.json());
-  LOG.allLogs = r.logs || [];
-  LOG.allLogs.sort((a, b) => {
-    const ta = (a.time || a.timestamp || '').replace('T', ' ');
-    const tb = (b.time || b.timestamp || '').replace('T', ' ');
-    return tb.localeCompare(ta);
-  });
+  const url = API + '/api/log/list?limit=2000';
+  let lastErr = null;
+  // 最多重试 3 次（应对 Render 免费实例休眠 / 瞬时 503）
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 15000); // 15s 超时
+      const resp = await fetch(url, { signal: ctrl.signal });
+      clearTimeout(timer);
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const ct = resp.headers.get('content-type') || '';
+      if (!ct.includes('application/json')) throw new Error('非 JSON 响应（服务可能休眠）');
+      const r = await resp.json();
+      if (!r || typeof r.logs === 'undefined') throw new Error('响应结构异常');
+      if (r.ok === false || r.error) throw new Error(r.error || '服务端返回加载失败');
+      LOG.allLogs = r.logs || [];
+      hideLogError();
+      LOG.allLogs.sort((a, b) => {
+        const ta = (a.time || a.timestamp || '').replace('T', ' ');
+        const tb = (b.time || b.timestamp || '').replace('T', ' ');
+        return tb.localeCompare(ta);
+      });
 
-  // Render pool-level cards from ALL logs
-  const domainCount = LOG.allLogs.filter(l => l.type && l.type.startsWith('domain_')).length;
-  const emailCount = LOG.allLogs.filter(l => l.type && l.type.startsWith('email_')).length;
-  const replyCount = LOG.allLogs.filter(l => l.type && l.type.startsWith('reply_')).length;
-  const quoteCount = LOG.allLogs.filter(l => l.type && (l.type.startsWith('quote_') || l.type.startsWith('price_'))).length;
-  document.getElementById('log-cards').innerHTML = [
-    { l: 'Domain Pool', v: domainCount, c: 'blue' },
-    { l: 'Email Pool', v: emailCount, c: 'amber' },
-    { l: 'Reply Pool', v: replyCount, c: 'green' },
-    { l: 'Quote Pool', v: quoteCount, c: 'purple' },
-  ].map(c => `<div class="card"><div class="label">${c.l}</div><div class="value ${c.c}">${fmt(c.v)}</div></div>`).join('');
+      // Render pool-level cards from ALL logs
+      const domainCount = LOG.allLogs.filter(l => l.type && l.type.startsWith('domain_')).length;
+      const emailCount = LOG.allLogs.filter(l => l.type && l.type.startsWith('email_')).length;
+      const replyCount = LOG.allLogs.filter(l => l.type && l.type.startsWith('reply_')).length;
+      const quoteCount = LOG.allLogs.filter(l => l.type && (l.type.startsWith('quote_') || l.type.startsWith('price_'))).length;
+      document.getElementById('log-cards').innerHTML = [
+        { l: 'Domain Pool', v: domainCount, c: 'blue' },
+        { l: 'Email Pool', v: emailCount, c: 'amber' },
+        { l: 'Reply Pool', v: replyCount, c: 'green' },
+        { l: 'Quote Pool', v: quoteCount, c: 'purple' },
+      ].map(c => `<div class="card"><div class="label">${c.l}</div><div class="value ${c.c}">${fmt(c.v)}</div></div>`).join('');
 
-  renderLogPage();
+      renderLogPage();
+      return; // 成功，退出重试循环
+    } catch (e) {
+      lastErr = e;
+      console.warn('refreshLogs 第', attempt, '次失败:', e.message);
+      await new Promise(res => setTimeout(res, 1200 * attempt)); // 退避
+    }
+  }
+  // 全部重试失败 → 显示错误横幅，不再静默显示 0
+  showLogError('日志加载失败（服务可能休眠或网络波动）：' + (lastErr ? lastErr.message : '') + '。已重试 3 次仍失败，请稍后刷新。');
+}
+
+function showLogError(msg) {
+  let el = document.getElementById('log-error-banner');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'log-error-banner';
+    el.style.cssText = 'background:#fff3cd;color:#856404;padding:10px 14px;border:1px solid #ffeaa7;border-radius:8px;margin:8px 0;font-size:13px;';
+    const cards = document.getElementById('log-cards');
+    if (cards && cards.parentNode) cards.parentNode.insertBefore(el, cards);
+  }
+  el.textContent = '⚠️ ' + msg;
+  el.style.display = 'block';
+}
+
+function hideLogError() {
+  const el = document.getElementById('log-error-banner');
+  if (el) el.style.display = 'none';
 }
 
 function setLogPoolFilter(pool) {
@@ -4405,10 +3656,9 @@ function exportSelectedEmails(){
     }).join('\n');
   _downloadCSV(csv,'selected_emails.csv');
 }
-function exportQuotes(scope){
-  scope = scope || 'all';
-  // If rows are selected → export only selected (Jenny format CSV, ignores scope)
-  // If none selected → export via backend with scope filter (all|ready|abnormal)
+function exportQuotes(){
+  // If rows are selected → export only selected (Jenny format CSV)
+  // If none selected → export all via backend (same format)
   if(QUOTE_SEL.size){
     const rows=[...QUOTE_SEL].sort((a,b)=>a.idx-b.idx);
     const headers=['序号','Link','Price','Backlink Type','DR','DA','Ref. Domains','Traffic','Country','Keywords','Categories','Languages','TAT','Permanence','Contact','Cooperation','Payment','Discount','Link Rules','Status','其他'];
@@ -4422,8 +3672,8 @@ function exportQuotes(scope){
       }).join('\n');
     _downloadCSV(csv,'selected_quotes_jenny_format.csv');
   } else {
-    // No selection → open backend export with scope filter
-    window.open('/api/quote/export?scope=' + encodeURIComponent(scope), '_blank');
+    // No selection → open backend export-all in new tab
+    window.open('/api/quote/export','_blank');
   }
 }
 async function deleteSelectedQuotes(){
