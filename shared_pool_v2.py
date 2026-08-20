@@ -42,11 +42,7 @@ from datetime import datetime, timezone, timedelta
 
 # ── Config ─────────────────────────────────────────────────
 try:
-    import config as _cfg
-    SUPABASE_URL = getattr(_cfg, "SUPABASE_URL", None)
-    SUPABASE_ANON_KEY = getattr(_cfg, "SUPABASE_ANON_KEY", None)
-    # service_role key may come from config.py OR from Render env var (kept out of git for security)
-    SUPABASE_SERVICE_ROLE_KEY = getattr(_cfg, "SUPABASE_SERVICE_ROLE_KEY", None) or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    from config import SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY
 except ImportError:
     print("ERROR: config.py not found. Create config.py with SUPABASE_URL and SUPABASE_ANON_KEY.")
     sys.exit(1)
@@ -55,7 +51,7 @@ if not SUPABASE_URL or ("YOUR_PROJECT" in SUPABASE_URL):
     print("ERROR: Please edit config.py with your actual Supabase credentials.")
     sys.exit(1)
 if not SUPABASE_ANON_KEY and not SUPABASE_SERVICE_ROLE_KEY:
-    print("ERROR: Please set SUPABASE_ANON_KEY or SUPABASE_SERVICE_ROLE_KEY (env var also supported).")
+    print("ERROR: Please set SUPABASE_ANON_KEY or SUPABASE_SERVICE_ROLE_KEY in config.py.")
     sys.exit(1)
 
 # 2026-08-19 Pro 升级后，anon key 的 JWT ref (hoab) 与 Dashboard 显示的 project ID (hoah) 不一致 → 401。
