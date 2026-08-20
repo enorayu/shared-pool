@@ -1416,7 +1416,6 @@ def quote_list():
             f"country.ilike.*{safe_search}*",
             f"niche.ilike.*{safe_search}*",
             f"site_category.ilike.*{safe_search}*",
-            f"keywords.ilike.*{safe_search}*",
             f"categories.ilike.*{safe_search}*",
             f"link_rules.ilike.*{safe_search}*",
         ])
@@ -1465,7 +1464,7 @@ def quote_stats():
     })
 
 
-_QUOTE_EMPTY_DIMS = ["dr","da","ref_domains","traffic","country","keywords","categories",
+_QUOTE_EMPTY_DIMS = ["dr","da","ref_domains","traffic","country","categories",
                     "languages","cooperation_type","payment","link_rules","permanence","content"]
 def _quote_fill_count(q):
     """13 个关键维度字段中非空数；"""
@@ -1547,7 +1546,7 @@ def quote_export():
     # + 8 standard fields as separate columns (cooperation_type/payment/discount/link_rules/
     #   content/requirements/additional_services/supplier)
     headers = ["#", "Link", "Price", "Backlink Type", "DR", "DA",
-               "Ref. Domains", "Traffic", "Country", "Keywords",
+               "Ref. Domains", "Traffic", "Country",
                "Categories", "Languages", "TAT", "Permanence", "Contact",
                "Cooperation", "Payment", "Link Rules", "Status",
                "Data Status"]
@@ -1577,8 +1576,7 @@ def quote_export():
             safe_str(q.get("ref_domains")),                # 6  Ref. Domains
             safe_str(q.get("traffic")),                    # 7  Traffic
             safe_str(q.get("country")),                    # 8  Country
-            safe_str(q.get("keywords")),                   # 9  Keywords
-            safe_str(q.get("categories")),                 # 10 Categories
+            safe_str(q.get("categories")),                 # 9  Categories
             safe_str(q.get("languages")),                  # 11 Languages
             safe_str(q.get("tat")) or "",                  # 12 TAT (空则显示空，不漏到下一列)
             safe_str(q.get("permanence")),                 # 13 Permanence
@@ -3511,7 +3509,6 @@ tr.selected-row td{background:#e8f4fd}
       <th class="col-link">Link</th><th>Price</th><th>Backlink Type</th>
       <th class="q-col-extra">DR</th><th class="q-col-extra">DA</th>
       <th class="q-col-extra">Ref. Domains</th><th class="q-col-extra">Traffic</th><th>Country</th>
-      <th class="col-keywords">Keywords</th>
       <th class="q-col-extra">Categories</th><th class="q-col-extra">Languages</th>
       <th class="q-col-extra">TAT</th><th>Permanence</th><th class="col-contact">Contact</th>
       <th class="q-col-extra">Cooperation</th><th class="q-col-extra">Payment</th>
@@ -3919,18 +3916,17 @@ async function loadQuoteTable(){
     '<th class="q-col-extra">DR</th><th class="q-col-extra">DA</th>'+
     '<th class="q-col-extra">MeUp价格</th><th class="q-col-extra">Bazoom价格</th>'+
     '<th class="q-col-extra">Ref. Domains</th><th class="q-col-extra">Traffic</th><th>Country</th>'+
-    '<th class="col-keywords">Keywords</th>'+
     '<th class="q-col-extra">Categories</th><th class="q-col-extra">Languages</th>'+
     '<th class="q-col-extra">TAT</th><th>Permanence</th><th class="col-contact">Contact</th>'+
     '<th class="q-col-extra">Cooperation</th><th class="q-col-extra">Payment</th>'+
     '<th class="col-linkrules">Link Rules</th><th>Status</th></tr>';
 
-  const mappedFields=new Set(['domain','price','cooperation_type','traffic','country','site_category','niche','tat','permanence','contact_email','email','supplier','da','dr','ref_domains','keywords','categories','languages','link_rules','content','payment','discount','additional_services','requirements','reply_content','status','notes','discovered_by','discovered_at','quote_id','reply_id','priority','id']);
+  const mappedFields=new Set(['domain','price','cooperation_type','traffic','country','site_category','niche','tat','permanence','contact_email','email','supplier','da','dr','ref_domains','categories','languages','link_rules','content','payment','discount','additional_services','requirements','reply_content','status','notes','discovered_by','discovered_at','quote_id','reply_id','priority','id']);
 
   // 空壳行判定（与后端 _quote_is_empty 保持一致）：
   //   有 reply_id 或 reply_content 非空 → 视为有用数据（带原始回信原文），不为空壳；
   //   否则 13 个维度字段全空 → 空壳，自动沉底。
-  const _EMPTY_DIMS=['dr','da','ref_domains','traffic','country','keywords','categories','languages','cooperation_type','payment','link_rules','permanence','content'];
+  const _EMPTY_DIMS=['dr','da','ref_domains','traffic','country','categories','languages','cooperation_type','payment','link_rules','permanence','content'];
   function _isEmpty(q){
     if(q.reply_id != null && q.reply_id !== '' && q.reply_id !== 0) return false;
     const rc = q.reply_content;
@@ -3975,7 +3971,6 @@ async function loadQuoteTable(){
         <td class="q-col-extra">${esc(q.ref_domains||'')}</td>
         <td class="q-col-extra">${esc(q.traffic||'')}</td>
         <td>${esc(q.country||'')}</td>
-        <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(q.keywords||'',200)}">${esc(q.keywords||'')}</td>
         <td class="q-col-extra" style="max-width:100px;overflow:hidden;text-overflow:ellipsis">${esc(q.categories||'')}</td>
         <td class="q-col-extra">${esc(q.languages||'')}</td>
         <td class="q-col-extra">${esc(q.tat||'')}</td>
@@ -4414,7 +4409,7 @@ function exportQuotes(scope){
   // If none selected → export via backend with scope filter (all|ready|abnormal)
   if(QUOTE_SEL.size){
     const rows=[...QUOTE_SEL].sort((a,b)=>a.idx-b.idx);
-    const headers=['序号','Link','Price','Backlink Type','DR','DA','Ref. Domains','Traffic','Country','Keywords','Categories','Languages','TAT','Permanence','Contact','Cooperation','Payment','Discount','Link Rules','Status','其他'];
+    const headers=['序号','Link','Price','Backlink Type','DR','DA','Ref. Domains','Traffic','Country','Categories','Languages','TAT','Permanence','Contact','Cooperation','Payment','Discount','Link Rules','Status','其他'];
     const csv='\uFEFF'+headers.join(',')+'\n'+
       rows.map((r,i)=>{
         const tr=r.row||document.querySelector(`#quote-table tr[data-id="${r.id}"]`);
