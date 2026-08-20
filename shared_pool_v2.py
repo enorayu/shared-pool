@@ -1497,7 +1497,7 @@ def quote_export():
             try:
                 batch = db.select(
                     "quote_pool", select="*", limit=PAGE, offset=page * PAGE,
-                    filters=filters, order="quote_id", ascending=True,
+                    filters=filters, order="discovered_at", ascending=False,
                 )
                 if batch is not None:
                     break
@@ -1510,6 +1510,13 @@ def quote_export():
         if len(batch) < PAGE:
             break
         page += 1
+    # 与面板 /api/quote/list 对齐：空壳行(dr/da/traffic/country 等维度 <3 个非空)沉底，
+    # 保证导出 CSV 行序与面板逐行对应（用户要求"直接对应"）。
+    _EMPTY_DIMS = ["dr","da","ref_domains","traffic","country","keywords","categories",
+                   "languages","cooperation_type","payment","link_rules","permanence","content"]
+    def _fill_count(q):
+        return sum(1 for k in _EMPTY_DIMS if q.get(k) not in (None, "", "null"))
+    quotes.sort(key=lambda q: (1 if _fill_count(q) < 3 else 0,))
     # Jenny CSV columns (excluding Casino/Finance/Erotic/Dating/CBD/Crypto/Medicine Niche Price)
     # + 8 standard fields as separate columns (cooperation_type/payment/discount/link_rules/
     #   content/requirements/additional_services/supplier)
@@ -3893,7 +3900,21 @@ async function loadQuoteTable(){
 
   const mappedFields=new Set(['domain','price','cooperation_type','traffic','country','site_category','niche','tat','permanence','contact_email','email','supplier','da','dr','ref_domains','keywords','categories','languages','link_rules','content','payment','discount','additional_services','requirements','reply_content','status','notes','discovered_by','discovered_at','quote_id','reply_id','priority','id']);
 
-  let tb=(allQuotes).map((q,i)=>{
+  // 空壳行判定：关键维度字段(dr/da/ref_domains/traffic/country/keywords/categories/
+  //   languages/cooperation_type/payment/link_rules/permanence/content)中非空数 < 3
+  //   → 视为"几乎全空"，自动沉底，避免污染面板头部（源数据已丢失无法回填）。
+  const _EMPTY_DIMS=['dr','da','ref_domains','traffic','country','keywords','categories','languages','cooperation_type','payment','link_rules','permanence','content'];
+  function _fillCount(q){
+    let n=0;
+    for(const k of _EMPTY_DIMS){const v=q[k]; if(v!=null && String(v).trim()!=='') n++;}
+    return n;
+  }
+  // 复制并标注，按"空壳置底"重排（非空行保持原 discovered_at DESC 顺序）
+  const _ranked = allQuotes.map((q, i) => ({ q, i, _empty: _fillCount(q) < 3 }));
+  _ranked.sort((a, b) => (a._empty === b._empty) ? (a.i - b.i) : (a._empty ? 1 : -1));
+  const _ordered = _ranked.map(x => x.q);
+
+  let tb=(_ordered).map((q,i)=>{
       const otherParts=[];
       for(const [k,v] of Object.entries(q)){
         if(!mappedFields.has(k.toLowerCase()) && v!=null && String(v).trim()) otherParts.push(k+': '+v);
