@@ -1433,17 +1433,11 @@ def quote_list():
         quotes = data if isinstance(data, list) else []
         return jsonify({"quotes": quotes or [], "total": total, "offset": offset})
 
-    quotes = db.select(
-        "quote_pool",
-        select="*",
-        filters=filters,
-        limit=limit,
-        offset=offset,
-        order="discovered_at",
-        ascending=False,
-    )
-    total = db.count("quote_pool", filters=filters)
-    return jsonify({"quotes": quotes or [], "total": total, "offset": offset})
+    quotes = _quote_fetch_and_sort(filters)
+    total = len(quotes)
+    # Python 端分页（空壳置底已在 _quote_fetch_and_sort 完成）
+    page_quotes = quotes[offset:offset + limit]
+    return jsonify({"quotes": page_quotes or [], "total": total, "offset": offset})
 
 
 @app.route("/api/price/stats", methods=["GET"])
@@ -1471,24 +1465,42 @@ def quote_stats():
     })
 
 
-@app.route("/api/price/export", methods=["GET"])
-@app.route("/api/quote/export", methods=["GET"])
-def quote_export():
-    """Export quotes as CSV — Jenny template format (without 6 Niche Price columns).
-    scope=all (默认) | ready (仅READY) | abnormal (NEED_*)
+_QUOTE_EMPTY_DIMS = ["dr","da","ref_domains","traffic","country","keywords","categories",
+                    "languages","cooperation_type","payment","link_rules","permanence","content"]
+def _quote_fill_count(q):
+    """13 个关键维度字段中非空数；"""
+    return sum(1 for k in _QUOTE_EMPTY_DIMS if q.get(k) not in (None, "", "null"))
 
+def _quote_is_empty(q):
+    """判定是否为"空壳行"（应置底）。
+    空壳 = 没有任何可用数据：13 个维度字段全空 AND 没有原始回信(reply_content/reply_id 都无)。
+    只要带原始回信(reply_id 或 reply_content 非空)即视为有用数据，不管维度字段多空——
+    因为 reply_content 里有供应商的完整报价原文，是可对外使用的真数据。
     """
-    scope = (request.args.get("scope") or "all").lower()
-    filters = {}
-    if scope == "ready":
-        filters["data_status"] = "eq.READY"
-    elif scope == "abnormal":
-        # NEED_DOMAIN / NEED_PRICE / NEED_REVIEW 等任意非 READY
-        filters["data_status"] = "neq.READY"
-    # Supabase PostgREST 单次硬上限 1000 行，必须分页拉全量。
-    # 用 quote_id 排序保证分页稳定（discovered_at 多为 null 会导致排序重叠/死循环）。
-    # 单页失败 5 次退避重试，抗 Supabase SSL 抖动。
-    quotes = []
+    if q.get("reply_id") not in (None, "", 0):
+        return False
+    rc = q.get("reply_content")
+    if rc not in (None, "", "null") and str(rc).strip():
+        return False
+    return _quote_fill_count(q) < 1
+
+def _quote_sort_key(q, original_index):
+    """面板 /api/quote/list 和导出 /api/quote/export 共用排序：
+    空壳行置底，其余按 discovered_at DESC（同 discovered_at 时稳定按原序避免抖动）。
+    original_index 由调用方传入，记录其在 DB 返回列表里的位置（discovered_at DESC 序）。
+    """
+    is_empty = _quote_is_empty(q)
+    # 空壳=1 (排后)，非空=0 (排前)；同组内用 -original_index 让 discovered_at DESC 的原顺序保留
+    # 用 None 时排最后而非最前，避免 NULL discovered_at 把空壳行顶到头部
+    disc = q.get("discovered_at") or ""
+    return (1 if is_empty else 0, disc, -original_index)
+
+def _quote_fetch_and_sort(filters, scope=None):
+    """按 discovered_at DESC 全量拉 quote_pool（PG 单次 1000 上限，分页拉），Python 侧空壳置底。
+    返回按 (_quote_sort_key) 排序后的 list。
+    与面板 /api/quote/list + 导出 /api/quote/export 共用，确保两边行序逐行对应。
+    """
+    all_rows = []
     page = 0
     PAGE = 1000
     while True:
@@ -1506,17 +1518,31 @@ def quote_export():
                 time.sleep(1.5)
         if not batch:
             break
-        quotes.extend(batch)
+        all_rows.extend(batch)
         if len(batch) < PAGE:
             break
         page += 1
-    # 与面板 /api/quote/list 对齐：空壳行(dr/da/traffic/country 等维度 <3 个非空)沉底，
-    # 保证导出 CSV 行序与面板逐行对应（用户要求"直接对应"）。
-    _EMPTY_DIMS = ["dr","da","ref_domains","traffic","country","keywords","categories",
-                   "languages","cooperation_type","payment","link_rules","permanence","content"]
-    def _fill_count(q):
-        return sum(1 for k in _EMPTY_DIMS if q.get(k) not in (None, "", "null"))
-    quotes.sort(key=lambda q: (1 if _fill_count(q) < 3 else 0,))
+    # 稳定排序：先 enumerate 再 sort，原 discovered_at DESC 序保留
+    indexed = list(enumerate(all_rows))
+    indexed.sort(key=lambda ix: _quote_sort_key(ix[1], ix[0]))
+    return [q for _, q in indexed]
+
+@app.route("/api/price/export", methods=["GET"])
+@app.route("/api/quote/export", methods=["GET"])
+def quote_export():
+    """Export quotes as CSV — Jenny template format (without 6 Niche Price columns).
+    scope=all (默认) | ready (仅READY) | abnormal (NEED_*)
+
+    """
+    scope = (request.args.get("scope") or "all").lower()
+    filters = {}
+    if scope == "ready":
+        filters["data_status"] = "eq.READY"
+    elif scope == "abnormal":
+        # NEED_DOMAIN / NEED_PRICE / NEED_REVIEW 等任意非 READY
+        filters["data_status"] = "neq.READY"
+    # 与面板 /api/quote/list 共用 _quote_fetch_and_sort，确保行序逐行对应
+    quotes = _quote_fetch_and_sort(filters, scope=scope)
     # Jenny CSV columns (excluding Casino/Finance/Erotic/Dating/CBD/Crypto/Medicine Niche Price)
     # + 8 standard fields as separate columns (cooperation_type/payment/discount/link_rules/
     #   content/requirements/additional_services/supplier)
@@ -3900,17 +3926,20 @@ async function loadQuoteTable(){
 
   const mappedFields=new Set(['domain','price','cooperation_type','traffic','country','site_category','niche','tat','permanence','contact_email','email','supplier','da','dr','ref_domains','keywords','categories','languages','link_rules','content','payment','discount','additional_services','requirements','reply_content','status','notes','discovered_by','discovered_at','quote_id','reply_id','priority','id']);
 
-  // 空壳行判定：关键维度字段(dr/da/ref_domains/traffic/country/keywords/categories/
-  //   languages/cooperation_type/payment/link_rules/permanence/content)中非空数 < 3
-  //   → 视为"几乎全空"，自动沉底，避免污染面板头部（源数据已丢失无法回填）。
+  // 空壳行判定（与后端 _quote_is_empty 保持一致）：
+  //   有 reply_id 或 reply_content 非空 → 视为有用数据（带原始回信原文），不为空壳；
+  //   否则 13 个维度字段全空 → 空壳，自动沉底。
   const _EMPTY_DIMS=['dr','da','ref_domains','traffic','country','keywords','categories','languages','cooperation_type','payment','link_rules','permanence','content'];
-  function _fillCount(q){
+  function _isEmpty(q){
+    if(q.reply_id != null && q.reply_id !== '' && q.reply_id !== 0) return false;
+    const rc = q.reply_content;
+    if(rc != null && String(rc).trim() !== '') return false;
     let n=0;
     for(const k of _EMPTY_DIMS){const v=q[k]; if(v!=null && String(v).trim()!=='') n++;}
-    return n;
+    return n < 1;
   }
   // 复制并标注，按"空壳置底"重排（非空行保持原 discovered_at DESC 顺序）
-  const _ranked = allQuotes.map((q, i) => ({ q, i, _empty: _fillCount(q) < 3 }));
+  const _ranked = allQuotes.map((q, i) => ({ q, i, _empty: _isEmpty(q) }));
   _ranked.sort((a, b) => (a._empty === b._empty) ? (a.i - b.i) : (a._empty ? 1 : -1));
   const _ordered = _ranked.map(x => x.q);
 
