@@ -3917,6 +3917,7 @@ async function loadQuoteTable(){
   let th='<tr><th><input type="checkbox" class="chk-all" onchange="toggleQuoteAll(this)" title="Select All"></th><th>#</th>'+
     '<th class="col-link">Link</th><th>Price</th><th>Backlink Type</th>'+
     '<th class="q-col-extra">DR</th><th class="q-col-extra">DA</th>'+
+    '<th class="q-col-extra">MeUp价格</th><th class="q-col-extra">Bazoom价格</th>'+
     '<th class="q-col-extra">Ref. Domains</th><th class="q-col-extra">Traffic</th><th>Country</th>'+
     '<th class="col-keywords">Keywords</th>'+
     '<th class="q-col-extra">Categories</th><th class="q-col-extra">Languages</th>'+
@@ -3969,6 +3970,8 @@ async function loadQuoteTable(){
         <td>${esc(q.price_type || q.site_category || q.niche || '')}</td>
         <td class="q-col-extra">${esc(q.dr||'')}</td>
         <td class="q-col-extra">${esc(q.da||'')}</td>
+        <td class="q-col-extra">${q.meup_price!=null?esc(q.meup_price):'<span style="color:#bbb">—</span>'}</td>
+        <td class="q-col-extra">${q.bazoom_price!=null?esc(q.bazoom_price):'<span style="color:#bbb">—</span>'}</td>
         <td class="q-col-extra">${esc(q.ref_domains||'')}</td>
         <td class="q-col-extra">${esc(q.traffic||'')}</td>
         <td>${esc(q.country||'')}</td>
