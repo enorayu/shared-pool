@@ -1553,7 +1553,7 @@ def quote_export():
     # Jenny CSV columns (excluding Casino/Finance/Erotic/Dating/CBD/Crypto/Medicine Niche Price)
     # + 8 standard fields as separate columns (cooperation_type/payment/discount/link_rules/
     #   content/requirements/additional_services/supplier)
-    headers = ["#", "Link", "Price", "Backlink Type", "DR", "DA",
+    headers = ["#", "Link", "Price", "Meup Price", "Bazoom Price", "Backlink Type", "DR", "DA",
                "Ref. Domains", "Traffic", "Country",
                "Categories", "Languages", "TAT", "Permanence", "Contact",
                "Cooperation", "Payment", "Link Rules", "Status",
