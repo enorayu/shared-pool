@@ -1447,7 +1447,6 @@ def quote_list():
     return jsonify({"quotes": page_quotes or [], "total": total, "offset": offset})
 
 
-@app.route("/api/price/stats", methods=["GET"])
 @app.route("/api/quote/stats", methods=["GET"])
 def quote_stats():
     """Quote pool statistics."""
@@ -1464,6 +1463,26 @@ def quote_stats():
         from collections import Counter
         status_counts = dict(Counter(q.get("status") for q in quotes if q.get("status")))
 
+    return jsonify({
+        "total": total,
+        "suppliers": suppliers,
+        "today_new": 0,
+        "by_status": status_counts,
+    })
+
+@app.route("/api/price/stats", methods=["GET"])
+def price_stats():
+    """Price pool statistics (read price_pool)."""
+    total = db.count("price_pool")
+    suppliers = 0
+    if total > 0:
+        rows = db.select("price_pool", select="supplier", limit=5000)
+        suppliers = len(set(q.get("supplier") for q in rows if q.get("supplier")))
+    status_counts = {}
+    if total > 0:
+        rows = db.select("price_pool", select="status", limit=5000)
+        from collections import Counter
+        status_counts = dict(Counter(q.get("status") for q in rows if q.get("status")))
     return jsonify({
         "total": total,
         "suppliers": suppliers,
@@ -1535,6 +1554,46 @@ def _quote_fetch_and_sort(filters, scope=None):
     return [q for _, q in indexed]
 
 @app.route("/api/price/export", methods=["GET"])
+def price_export():
+    """Export price_pool as CSV (Jenny template, 同 quote 列定义)."""
+    import io as _io
+    cols_param = (request.args.get("cols") or "").strip()
+    # 直接读 price_pool 全量
+    quotes = db.select("price_pool", select="*", limit=100000) or []
+    # 按 domain 去重（保留首条）
+    _seen=set(); _uniq=[]
+    for q in quotes:
+        d=q.get("domain")
+        if d in _seen: continue
+        _seen.add(d); _uniq.append(q)
+    quotes=_uniq
+    output=_io.StringIO()
+    writer=csv.writer(output)
+    if cols_param:
+        wanted=[c.strip() for c in cols_param.split(",") if c.strip()]
+        picked=[(k,lab) for (k,lab,_) in COL_DEFS if k in wanted]
+        if not picked: picked=[(k,lab) for (k,lab,_) in COL_DEFS]
+    else:
+        picked=[(k,lab) for (k,lab,_) in COL_DEFS]
+    picked_keys={k for (k,_) in picked}
+    picked_lambdas=[(k,lab,fn) for (k,lab,fn) in COL_DEFS if k in picked_keys]
+    writer.writerow([lab for (_,lab) in picked])
+    for idx,q in enumerate(quotes or [],1):
+        norm=q.get("normalized_price")
+        if norm is not None and str(norm).strip()!="":
+            price_val=float(norm)
+            price_display=str(int(price_val)) if price_val==int(price_val) else f"{price_val:g}"
+            price_cell=f"{price_display} {q.get('normalized_currency') or 'USD'}"
+        else:
+            price_cell=safe_str(q.get("price"))
+        link_cell=safe_str(q.get("domain"))
+        row_vals=[fn(idx,q,price_cell,link_cell) for (_,_,fn) in picked_lambdas]
+        writer.writerow(row_vals)
+    csv_text=output.getvalue()
+    csv_bytes="\ufeff".encode("utf-8")+csv_text.encode("utf-8")
+    return Response(csv_bytes,mimetype="text/csv",
+        headers={"Content-Disposition":"attachment; filename=price_pool_export.csv"})
+
 @app.route("/api/quote/export", methods=["GET"])
 def quote_export():
     """Export quotes as CSV — Jenny template format (without 6 Niche Price columns).
@@ -3439,6 +3498,7 @@ tr.selected-row td{background:#e8f4fd}
   <div class="tab" onclick="switchTab('email')">Email Pool</div>
   <div class="tab" onclick="switchTab('reply')">Reply Pool</div>
   <div class="tab" onclick="switchTab('quote')">Quote Pool</div>
+  <div class="tab" onclick="switchTab('price')">Price Pool</div>
   <div class="tab" onclick="switchTab('log')">Operation Log</div>
 </div>
 
@@ -3658,6 +3718,47 @@ tr.selected-row td{background:#e8f4fd}
   </div>
 </div>
 
+<!-- Price Pool -->
+<div class="page" id="page-price">
+  <div class="cards" id="price-cards"></div>
+  <script>setTimeout(()=>{try{loadPriceTable();}catch(e){console.error('preload price failed',e);}},300);</script>
+  <div class="actions">
+    <label style="font-size:12px;color:var(--muted)"><svg style="vertical-align:-2px;width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg> Search</label>
+    <input id="p-search" placeholder="domain, email, niche, country..." style="width:200px;padding:4px 8px;font-size:12px;border:0.5px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text)" onkeydown="if(event.key==='Enter'){PRICE_PAGER.page=1;loadPriceTable()}">
+    <button class="btn" style="font-size:11px;padding:4px 10px" onclick="PRICE_PAGER.page=1;loadPriceTable()">Search</button>
+    <button class="btn green" onclick="openPriceExportPanel()">Export</button>
+  </div>
+  <div style="overflow-x:auto;max-height:calc(100vh - 320px);overflow-y:auto">
+  <style>
+    #price-table{font-size:12px;border-collapse:collapse;width:auto;min-width:100%}
+    #price-table th,#price-table td{padding:4px 7px;vertical-align:middle;line-height:1.25}
+    #price-table th{white-space:nowrap;font-size:11px;font-weight:600}
+  </style>
+  <table id="price-table">
+    <thead><tr><th>#</th><th>Link</th><th>Price</th><th>Backlink Type</th><th>DR</th><th>DA</th><th>MeUp价格</th><th>Bazoom价格</th><th>Ref. Domains</th><th>Traffic</th><th>Country</th><th>Categories</th><th>Languages</th><th>TAT</th><th>Permanence</th><th>Contact</th><th>Cooperation</th><th>Payment</th><th>Link Rules</th><th>Status</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  </div>
+  <div style="margin-top:6px;font-size:12px;color:var(--muted)">
+    <span id="price-page-info"></span>
+    <select id="price-page-size" onchange="PRICE_PAGER.pageSize=parseInt(this.value)||50;PRICE_PAGER.page=1;loadPriceTable()" style="margin-left:10px">
+      <option value="20">20/page</option><option value="50" selected>50/page</option><option value="100">100/page</option>
+    </select>
+    <button class="btn" style="font-size:11px;padding:3px 9px;margin-left:6px" onclick="PRICE_PAGER.page=Math.max(1,PRICE_PAGER.page-1);loadPriceTable()">Prev</button>
+    <button class="btn" style="font-size:11px;padding:3px 9px" onclick="PRICE_PAGER.page++;loadPriceTable()">Next</button>
+  </div>
+  <div id="price-export-panel" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:9999;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px;max-width:420px;box-shadow:0 10px 40px rgba(0,0,0,0.4)">
+    <div style="font-weight:600;margin-bottom:12px;color:var(--text)">选择导出列</div>
+    <div id="price-export-cols" style="display:grid;grid-template-columns:1fr 1fr;gap:6px 18px;max-height:320px;overflow:auto;margin-bottom:14px"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn" onclick="setPriceExportCols(true)">Select All</button>
+      <button class="btn" onclick="setPriceExportCols(false)">Clear</button>
+      <button class="btn" onclick="closePriceExportPanel()">Cancel</button>
+      <button class="btn green" onclick="confirmPriceExport()">Download CSV</button>
+    </div>
+  </div>
+</div>
+
 <!-- Operation Log -->
 <div class="page" id="page-log">
   <div class="cards" id="log-cards"></div>
@@ -3844,13 +3945,14 @@ async function saveTeam(){
 }
 
 function switchTab(name){
-  const tabs=['domain','email','reply','quote','log'];
+  const tabs=['domain','email','reply','quote','price','log'];
   document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',tabs[i]===name));
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.getElementById('page-'+name).classList.add('active');
   if(name==='email')loadEmailTable();
   if(name==='reply')loadReplyTable('');
   if(name==='quote')loadQuoteTable();
+  if(name==='price')loadPriceTable();
   if(name==='log')loadLogTable('');
 }
 
@@ -3875,6 +3977,13 @@ async function loadStats(){
     document.getElementById('quote-cards').innerHTML=[
       {l:'Total quotes',v:s.quote_total,c:'blue'},{l:'Today new',v:s.quote_today_new,c:'amber'},
     ].map(c=>`<div class="card"><div class="label">${c.l}</div><div class="value ${c.c}">${fmt(c.v)}</div></div>`).join('');
+    // Price Pool 卡片（独立请求 /api/price/stats）
+    try{
+      const ps=await fetch(API+'/api/price/stats').then(r=>r.json());
+      document.getElementById('price-cards').innerHTML=[
+        {l:'Price Pool Total',v:ps.total,c:'green'},{l:'Suppliers',v:ps.suppliers,c:'blue'},
+      ].map(c=>`<div class="card"><div class="label">${c.l}</div><div class="value ${c.c}">${fmt(c.v)}</div></div>`).join('');
+    }catch(e){}
     document.getElementById('refresh-msg').textContent='Updated: '+new Date().toLocaleTimeString('zh-CN');
     populateUserFilters(s);
   }catch(e){document.getElementById('refresh-msg').textContent='Error: '+e.message}
@@ -4550,6 +4659,96 @@ function setExportCols(on){
 function getSelectedExportCols(){
   return [...document.querySelectorAll('#quote-export-cols .qe-col:checked')].map(c => c.value);
 }
+// ============================================================
+// Price Pool (front-end)
+// ============================================================
+const PRICE_PAGER = {page:1, pageSize:50};
+function esc2(v){ if(v==null) return ''; return String(v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+async function loadPriceTable(){
+  const limit=PRICE_PAGER.pageSize;
+  const offset=(PRICE_PAGER.page-1)*limit;
+  const searchVal=(document.getElementById('p-search')||{}).value||'';
+  let url=API+'/api/price/list?limit='+limit+'&offset='+offset;
+  if(searchVal.trim()) url+='&search='+encodeURIComponent(searchVal.trim());
+  const r=await fetch(url).then(r=>r.json());
+  const total=r.total||0;
+  const maxPage=Math.max(1,Math.ceil(total/limit));
+  if(PRICE_PAGER.page>maxPage){PRICE_PAGER.page=maxPage;}
+  const rows=r.quotes||[];
+  const th='<tr><th>#</th><th>Link</th><th>Price</th><th>Backlink Type</th><th>DR</th><th>DA</th>'+
+    '<th>MeUp价格</th><th>Bazoom价格</th><th>Ref. Domains</th><th>Traffic</th><th>Country</th>'+
+    '<th>Categories</th><th>Languages</th><th>TAT</th><th>Permanence</th><th>Contact</th>'+
+    '<th>Cooperation</th><th>Payment</th><th>Link Rules</th><th>Status</th></tr>';
+  const tb=rows.map((q,i)=>{
+    const priceDisp=(function(){var n=parseFloat(q.normalized_price);if(!isNaN(n)){var d=n%1===0?String(n):String(n);return d+' '+(q.normalized_currency||'USD')}return q.price||''})();
+    const contact=esc2(q.contact_email||q.email||'');
+    return '<tr data-id="'+esc2(q.price_pool_id||q.id)+'">'+
+      '<td style="color:var(--muted);font-size:10.5px;text-align:center">'+(i+1+(PRICE_PAGER.page-1)*limit)+'</td>'+
+      '<td><a href="http://'+esc2(q.domain)+'" target="_blank">'+esc2(q.domain)+'</a></td>'+
+      '<td style="white-space:nowrap">'+esc2(priceDisp)+'</td>'+
+      '<td>'+esc2(q.price_type||q.site_category||q.niche||'')+'</td>'+
+      '<td>'+esc2(q.dr||'')+'</td>'+
+      '<td>'+esc2(q.da||'')+'</td>'+
+      '<td>'+(q.meup_price!=null?esc2(q.meup_price):'<span style="color:#bbb">—</span>')+'</td>'+
+      '<td>'+(q.bazoom_price!=null?esc2(q.bazoom_price):'<span style="color:#bbb">—</span>')+'</td>'+
+      '<td>'+esc2(q.ref_domains||'')+'</td>'+
+      '<td>'+esc2(q.traffic||'')+'</td>'+
+      '<td>'+esc2(q.country||'')+'</td>'+
+      '<td style="max-width:100px;overflow:hidden;text-overflow:ellipsis">'+esc2(q.categories||'')+'</td>'+
+      '<td>'+esc2(q.languages||'')+'</td>'+
+      '<td>'+esc2(q.tat||'')+'</td>'+
+      '<td>'+esc2(q.permanence||'')+'</td>'+
+      '<td title="'+esc2(q.contact_email||q.email||'')+'">'+contact+'</td>'+
+      '<td>'+esc2(q.cooperation_type||'')+'</td>'+
+      '<td>'+esc2(q.payment||'')+'</td>'+
+      '<td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+esc2(q.link_rules||'')+'">'+esc2(q.link_rules||'')+'</td>'+
+      '<td><span class="status-'+(q.status||'New')+'">'+esc2(q.status||'New')+'</span></td>'+
+    '</tr>';
+  }).join('');
+  document.getElementById('price-table').innerHTML=th+tb;
+  document.getElementById('price-page-info').textContent='Page '+PRICE_PAGER.page+' / '+maxPage+' ('+total+' records)';
+}
+
+// Price Pool 导出
+function openPriceExportPanel(){
+  const box=document.getElementById('price-export-cols');
+  if(!box) return;
+  if(!box.children.length){
+    box.innerHTML=PRICE_EXPORT_COLS.map(c=>
+      '<label style="font-size:12px;display:flex;align-items:center;gap:6px;cursor:pointer">'+
+      '<input type="checkbox" class="pe-col" value="'+c.key+'"'+(c.default?' checked':'')+'> '+c.label+'</label>'
+    ).join('');
+  }
+  document.getElementById('price-export-panel').style.display='block';
+}
+function closePriceExportPanel(){
+  document.getElementById('price-export-panel').style.display='none';
+}
+function setPriceExportCols(on){
+  document.querySelectorAll('#price-export-cols .pe-col').forEach(c=>c.checked=on);
+}
+const PRICE_EXPORT_COLS=[
+  {key:'idx',label:'#',default:true},{key:'link',label:'Link',default:true},
+  {key:'price',label:'Price',default:true},{key:'meup_price',label:'Meup Price',default:true},
+  {key:'bazoom_price',label:'Bazoom Price',default:true},{key:'backlink_type',label:'Backlink Type',default:true},
+  {key:'dr',label:'DR',default:true},{key:'da',label:'DA',default:true},
+  {key:'ref_domains',label:'Ref. Domains',default:true},{key:'traffic',label:'Traffic',default:true},
+  {key:'country',label:'Country',default:true},{key:'categories',label:'Categories',default:false},
+  {key:'languages',label:'Languages',default:true},{key:'tat',label:'TAT',default:true},
+  {key:'permanence',label:'Permanence',default:true},{key:'contact',label:'Contact',default:true},
+  {key:'cooperation',label:'Cooperation',default:false},{key:'payment',label:'Payment',default:false},
+  {key:'link_rules',label:'Link Rules',default:true},{key:'status',label:'Status',default:true},
+  {key:'data_status',label:'Data Status',default:true},
+];
+function confirmPriceExport(){
+  const cols=[...document.querySelectorAll('#price-export-cols .pe-col:checked')].map(c=>c.value);
+  if(!cols.length){alert('请至少勾选一列');return;}
+  const url=API+'/api/price/export?cols='+encodeURIComponent(cols.join(','));
+  window.open(url,'_blank');
+  closePriceExportPanel();
+}
+
 
 // 可导出列清单（key 对应后端 /api/quote/export 接收的 cols 名；label 用于表头）
 const QUOTE_EXPORT_COLS = [
