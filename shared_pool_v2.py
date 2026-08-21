@@ -1578,7 +1578,9 @@ def quote_export():
             idx,                                          # 0  #
             link_cell,                                    # 1  Link (异常域名带 [NEED_DOMAIN] 前缀)
             price_cell,                                   # 2  Price (e.g. "100 USD" 无小数点)
-            safe_str(q.get("price_type") or q.get("site_category") or q.get("niche")),   # 3  Backlink Type
+            safe_str(q.get("meup_price")),                    # 3  Meup Price
+            safe_str(q.get("bazoom_price")),                  # 4  Bazoom Price
+            safe_str(q.get("price_type") or q.get("site_category") or q.get("niche")),   # 5  Backlink Type
             safe_str(q.get("dr") or q.get("traffic")),     # 4  DR
             safe_str(q.get("da")),                         # 5  DA
             safe_str(q.get("ref_domains")),                # 6  Ref. Domains
