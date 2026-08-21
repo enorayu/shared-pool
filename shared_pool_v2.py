@@ -3582,13 +3582,17 @@ tr.selected-row td{background:#e8f4fd}
   <div class="cards" id="quote-cards"></div>
   <script>setTimeout(()=>{try{loadQuoteTable();}catch(e){console.error('preload quote failed',e);}},300);</script>
   <div class="actions">
-    <span style="font-size:12px;color:var(--muted);margin-right:4px">Export CSV:</span>
-    <button class="btn" onclick="exportQuotes('all')">All</button>
-    <button class="btn" onclick="exportQuotes('ready')">Normal only</button>
-    <button class="btn" onclick="exportQuotes('abnormal')">Abnormal only</button>
-    <button class="btn red" id="quote-delete-btn" onclick="deleteSelectedQuotes()" style="display:none">Delete Selected (<span id="quote-sel-count">0</span>)</button>
-    <label style="font-size:12px;color:var(--muted)">User</label><input id="q-user" placeholder="your name" style="width:100px" onchange="saveUserName()">
-    <label style="font-size:12px;color:var(--muted)">User Filter</label><select id="q-user-filter" onchange="loadQuoteTable()"><option value="">All Users</option></select>
+    <button class="btn green" onclick="openQuoteExportPanel()">Export</button>
+    <div id="quote-export-panel" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:9999;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px;max-width:420px;box-shadow:0 10px 40px rgba(0,0,0,0.4)">
+      <div style="font-weight:600;margin-bottom:12px;color:var(--text)">选择导出列</div>
+      <div id="quote-export-cols" style="display:grid;grid-template-columns:1fr 1fr;gap:6px 18px;max-height:320px;overflow:auto;margin-bottom:14px"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn" onclick="setExportCols(true)">Select All</button>
+        <button class="btn" onclick="setExportCols(false)">Clear</button>
+        <button class="btn" onclick="closeQuoteExportPanel()">Cancel</button>
+        <button class="btn green" onclick="confirmQuoteExport()">Download CSV</button>
+      </div>
+    </div>
     <label style="font-size:12px;color:var(--muted)"><svg style="vertical-align:-2px;width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg> Search</label>
     <input id="q-search" placeholder="domain, supplier, email, keyword..." style="width:200px;padding:4px 8px;font-size:12px;border:0.5px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text)" onkeydown="if(event.key==='Enter'){QUOTE_PAGER.page=1;loadQuoteTable()}">
     <button class="btn" style="font-size:11px;padding:4px 10px" onclick="QUOTE_PAGER.page=1;loadQuoteTable()">Search</button>
@@ -4019,7 +4023,7 @@ function onReplyPageSizeChange(){
 async function loadQuoteTable(){
   const limit=QUOTE_PAGER.pageSize;
   const offset=(QUOTE_PAGER.page-1)*limit;
-  const userFilter=document.getElementById('q-user-filter').value;
+  const userFilter='';
   const searchVal=(document.getElementById('q-search')||{}).value||'';
   let url=API+'/api/quote/list?limit='+limit+'&offset='+offset;
   if(userFilter) url+='&supplier='+encodeURIComponent(userFilter);
