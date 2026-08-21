@@ -1550,53 +1550,61 @@ def quote_export():
         filters["data_status"] = "neq.READY"
     # 与面板 /api/quote/list 共用 _quote_fetch_and_sort，确保行序逐行对应
     quotes = _quote_fetch_and_sort(filters, scope=scope)
-    # Jenny CSV columns (excluding Casino/Finance/Erotic/Dating/CBD/Crypto/Medicine Niche Price)
-    # + 8 standard fields as separate columns (cooperation_type/payment/discount/link_rules/
-    #   content/requirements/additional_services/supplier)
-    headers = ["#", "Link", "Price", "Meup Price", "Bazoom Price", "Backlink Type", "DR", "DA",
-               "Ref. Domains", "Traffic", "Country",
-               "Categories", "Languages", "TAT", "Permanence", "Contact",
-               "Cooperation", "Payment", "Link Rules", "Status",
-               "Data Status"]
+    # 表头/列定义改为下方 COL_DEFS 统一管理；表头按 cols 参数动态生成。
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(headers)
+
+    # 列定义（与前端 QUOTE_EXPORT_COLS 同步）：(key, label, value_lambda)
+    COL_DEFS = [
+        ("idx",           "#",             lambda idx, q, _pc, _lc: idx),
+        ("link",          "Link",          lambda idx, q, _pc, _lc: _lc),
+        ("price",         "Price",         lambda idx, q, _pc, _lc: _pc),
+        ("meup_price",    "Meup Price",    lambda idx, q, _pc, _lc: safe_str(q.get("meup_price"))),
+        ("bazoom_price",  "Bazoom Price",  lambda idx, q, _pc, _lc: safe_str(q.get("bazoom_price"))),
+        ("backlink_type", "Backlink Type", lambda idx, q, _pc, _lc: safe_str(q.get("price_type") or q.get("site_category") or q.get("niche"))),
+        ("dr",            "DR",            lambda idx, q, _pc, _lc: safe_str(q.get("dr") or q.get("traffic"))),
+        ("da",            "DA",            lambda idx, q, _pc, _lc: safe_str(q.get("da"))),
+        ("ref_domains",   "Ref. Domains",  lambda idx, q, _pc, _lc: safe_str(q.get("ref_domains"))),
+        ("traffic",       "Traffic",       lambda idx, q, _pc, _lc: safe_str(q.get("traffic"))),
+        ("country",       "Country",       lambda idx, q, _pc, _lc: safe_str(q.get("country"))),
+        ("categories",    "Categories",    lambda idx, q, _pc, _lc: safe_str(q.get("categories"))),
+        ("languages",     "Languages",     lambda idx, q, _pc, _lc: safe_str(q.get("languages"))),
+        ("tat",           "TAT",           lambda idx, q, _pc, _lc: safe_str(q.get("tat")) or ""),
+        ("permanence",    "Permanence",    lambda idx, q, _pc, _lc: safe_str(q.get("permanence"))),
+        ("contact",       "Contact",       lambda idx, q, _pc, _lc: safe_str(q.get("contact_email") or q.get("email"))),
+        ("cooperation",   "Cooperation",   lambda idx, q, _pc, _lc: safe_str(q.get("cooperation_type"))),
+        ("payment",       "Payment",       lambda idx, q, _pc, _lc: safe_str(q.get("payment"))),
+        ("link_rules",    "Link Rules",    lambda idx, q, _pc, _lc: safe_str(q.get("link_rules"))),
+        ("status",        "Status",        lambda idx, q, _pc, _lc: safe_str(q.get("status"))),
+        ("data_status",   "Data Status",   lambda idx, q, _pc, _lc: safe_str(q.get("data_status"))),
+    ]
+
+    # cols 参数：未传则全选；否则按顺序过滤
+    cols_param = (request.args.get("cols") or "").strip()
+    if cols_param:
+        wanted = [c.strip() for c in cols_param.split(",") if c.strip()]
+        picked = [(k, lab) for (k, lab, _) in COL_DEFS if k in wanted]
+        if not picked:
+            picked = [(k, lab) for (k, lab, _) in COL_DEFS]
+    else:
+        picked = [(k, lab) for (k, lab, _) in COL_DEFS]
+    picked_keys = {k for (k, _) in picked}
+    picked_lambdas = [(k, lab, fn) for (k, lab, fn) in COL_DEFS if k in picked_keys]
+
+    writer.writerow([lab for (_, lab) in picked])
 
     for idx, q in enumerate(quotes or [], 1):
         # Price: 优先 normalized_price + 单位(USD)，去掉多余小数点
         norm = q.get("normalized_price")
         if norm is not None and str(norm).strip() != "":
             price_val = float(norm)
-            # 整数不显示 .0，真正有小数才保留
             price_display = str(int(price_val)) if price_val == int(price_val) else f"{price_val:g}"
             price_cell = f"{price_display} {q.get('normalized_currency') or 'USD'}"
         else:
             price_cell = safe_str(q.get("price"))
-        # Link: domain 已是 canonical 标准化后的真实域名（异常靠 Data Status 列+前端颜色区分）
         link_cell = safe_str(q.get("domain"))
-        writer.writerow([
-            idx,                                          # 0  #
-            link_cell,                                    # 1  Link (异常域名带 [NEED_DOMAIN] 前缀)
-            price_cell,                                   # 2  Price (e.g. "100 USD" 无小数点)
-            safe_str(q.get("meup_price")),                    # 3  Meup Price
-            safe_str(q.get("bazoom_price")),                  # 4  Bazoom Price
-            safe_str(q.get("price_type") or q.get("site_category") or q.get("niche")),   # 5  Backlink Type
-            safe_str(q.get("dr") or q.get("traffic")),     # 4  DR
-            safe_str(q.get("da")),                         # 5  DA
-            safe_str(q.get("ref_domains")),                # 6  Ref. Domains
-            safe_str(q.get("traffic")),                    # 7  Traffic
-            safe_str(q.get("country")),                    # 8  Country
-            safe_str(q.get("categories")),                 # 9  Categories
-            safe_str(q.get("languages")),                  # 11 Languages
-            safe_str(q.get("tat")) or "",                  # 12 TAT (空则显示空，不漏到下一列)
-            safe_str(q.get("permanence")),                 # 13 Permanence
-            safe_str(q.get("contact_email") or q.get("email")),  # 14 Contact
-            safe_str(q.get("cooperation_type")),           # 15 Cooperation
-            safe_str(q.get("payment")),                    # 16 Payment
-            safe_str(q.get("link_rules")),                 # 17 Link Rules
-            safe_str(q.get("status")),                     # 18 Status
-            safe_str(q.get("data_status")),                # 19 Data Status
-        ])
+        row_vals = [fn(idx, q, price_cell, link_cell) for (_, _, fn) in picked_lambdas]
+        writer.writerow(row_vals)
 
     # UTF-8 with BOM so Excel (zh-CN / Windows) opens Chinese fields correctly.
     # Flask encodes a str body as Latin-1 by default → without explicit utf-8
@@ -4518,25 +4526,82 @@ function exportSelectedEmails(){
     }).join('\n');
   _downloadCSV(csv,'selected_emails.csv');
 }
-function exportQuotes(scope){
-  scope = scope || 'all';
-  // If rows are selected → export only selected (Jenny format CSV, ignores scope)
-  // If none selected → export via backend with scope filter (all|ready|abnormal)
-  if(QUOTE_SEL.size){
+function openQuoteExportPanel(){
+  const box = document.getElementById('quote-export-cols');
+  if (!box) return;
+  if (!box.children.length){
+    box.innerHTML = QUOTE_EXPORT_COLS.map(c =>
+      `<label style="font-size:12px;display:flex;align-items:center;gap:6px;cursor:pointer">`+
+      `<input type="checkbox" class="qe-col" value="${c.key}"${c.default?' checked':''}> ${c.label}</label>`
+    ).join('');
+  }
+  document.getElementById('quote-export-panel').style.display = 'block';
+}
+function closeQuoteExportPanel(){
+  document.getElementById('quote-export-panel').style.display = 'none';
+}
+function setExportCols(on){
+  document.querySelectorAll('#quote-export-cols .qe-col').forEach(c => c.checked = on);
+}
+function getSelectedExportCols(){
+  return [...document.querySelectorAll('#quote-export-cols .qe-col:checked')].map(c => c.value);
+}
+
+// 可导出列清单（key 对应后端 /api/quote/export 接收的 cols 名；label 用于表头）
+const QUOTE_EXPORT_COLS = [
+  {key:'idx',          label:'#',            default:true},
+  {key:'link',         label:'Link',         default:true},
+  {key:'price',        label:'Price',        default:true},
+  {key:'meup_price',   label:'Meup Price',   default:true},
+  {key:'bazoom_price', label:'Bazoom Price', default:true},
+  {key:'backlink_type',label:'Backlink Type',default:true},
+  {key:'dr',           label:'DR',           default:true},
+  {key:'da',           label:'DA',           default:true},
+  {key:'ref_domains',  label:'Ref. Domains', default:true},
+  {key:'traffic',      label:'Traffic',      default:true},
+  {key:'country',      label:'Country',      default:true},
+  {key:'categories',   label:'Categories',   default:false},
+  {key:'languages',    label:'Languages',    default:true},
+  {key:'tat',          label:'TAT',          default:true},
+  {key:'permanence',   label:'Permanence',   default:true},
+  {key:'contact',      label:'Contact',      default:true},
+  {key:'cooperation',  label:'Cooperation',  default:false},
+  {key:'payment',      label:'Payment',      default:false},
+  {key:'link_rules',   label:'Link Rules',   default:true},
+  {key:'status',       label:'Status',       default:true},
+  {key:'data_status',  label:'Data Status',  default:true},
+];
+
+function confirmQuoteExport(){
+  const cols = getSelectedExportCols();
+  if (!cols.length){ alert('请至少勾选一列'); return; }
+  if (QUOTE_SEL.size){
+    // 有勾选行：按当前页面表格的 td 文本取列（仅取勾选列）
     const rows=[...QUOTE_SEL].sort((a,b)=>a.idx-b.idx);
-    const headers=['序号','Link','Price','Backlink Type','DR','DA','Ref. Domains','Traffic','Country','Categories','Languages','TAT','Permanence','Contact','Cooperation','Payment','Discount','Link Rules','Status','其他'];
-    const csv='\uFEFF'+headers.join(',')+'\n'+
+    const thDefs=[
+      {key:'idx',idx:1},{key:'link',idx:2},{key:'price',idx:3},{key:'meup_price',idx:4},
+      {key:'bazoom_price',idx:5},{key:'backlink_type',idx:6},{key:'dr',idx:7},{key:'da',idx:8},
+      {key:'ref_domains',idx:9},{key:'traffic',idx:10},{key:'country',idx:11},{key:'categories',idx:12},
+      {key:'languages',idx:13},{key:'tat',idx:14},{key:'permanence',idx:15},{key:'contact',idx:16},
+      {key:'cooperation',idx:17},{key:'payment',idx:18},{key:'link_rules',idx:19},{key:'status',idx:20},
+      {key:'data_status',idx:21},
+    ];
+    const picked = thDefs.filter(d => cols.includes(d.key));
+    const headers = picked.map(d => QUOTE_EXPORT_COLS.find(c=>c.key===d.key).label);
+    const csv = '\uFEFF' + headers.join(',') + '\n' +
       rows.map((r,i)=>{
         const tr=r.row||document.querySelector(`#quote-table tr[data-id="${r.id}"]`);
         const tds=tr?tr.querySelectorAll('td'):[];
-        const vals=[];
-        for(let c=2;c<tds.length;c++) vals.push(tds[c]?tds[c].textContent:'');
-        return [i+1,...vals].map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',');
+        const vals = picked.map(d => tds[d.idx] ? tds[d.idx].textContent : '');
+        return [i+1, ...vals.slice(1)].map(v=>'"'+String(v).replace(/"/g,'""')+'"').join(',');
       }).join('\n');
-    _downloadCSV(csv,'selected_quotes_jenny_format.csv');
+    _downloadCSV(csv, 'selected_quotes_export.csv');
+    closeQuoteExportPanel();
   } else {
-    // No selection → open backend export with scope filter
-    window.open('/api/quote/export?scope=' + encodeURIComponent(scope), '_blank');
+    // 无勾选：走后端按 cols 过滤
+    const url = API + '/api/quote/export?cols=' + encodeURIComponent(cols.join(','));
+    window.open(url, '_blank');
+    closeQuoteExportPanel();
   }
 }
 async function deleteSelectedQuotes(){
