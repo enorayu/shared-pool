@@ -4303,6 +4303,8 @@ function _setupStickyHeader(tabId){
   // 关键：等待浏览器完成布局（多帧）后再读真实宽度。
   // 单次 requestAnimationFrame 不够，因为 innerHTML= 触发的回流在调用栈返回后才完成。
   // 用 double-rAF 保证 layout 已稳定。
+  // 此外立即同步执行一次（不阻塞），再用双 rAF 保险（处理后续异步图片/字体回流）。
+  sync();
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
       sync();
