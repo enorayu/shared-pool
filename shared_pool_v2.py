@@ -4284,12 +4284,21 @@ function _setupStickyHeader(tabId){
     const leftOffset = Math.round(tabRect.left - wrapRect.left + wrap.scrollLeft);
     fake.style.left = leftOffset + 'px';
   };
-  if(!wrap._stickySync){
+  // 每次 loadXxxTable 重建 fake，必须每次都注册新的 sync 闭包到 wrap 上。
+  // wrap._stickySync 之前设计成单例是错的，会导致后续 load 时新 fake 永远不被同步。
+  if(wrap._stickySync){
+    // 已注册 scroll/resize 监听；只更新 sync 引用即可（监听器读 wrap._stickySync()）。
+    wrap._stickySync = sync;
+  } else {
     wrap._stickySync = sync;
     wrap.addEventListener('scroll', () => {
-      fake.style.transform = 'translateY(' + wrap.scrollTop + 'px)';
+      // 用 ref 函数实时读最新 fake（避免旧 fake 引用闭包）
+      const f = document.getElementById(tabId + '-sticky-fake');
+      if(f) f.style.transform = 'translateY(' + wrap.scrollTop + 'px)';
     });
-    window.addEventListener('resize', sync);
+    window.addEventListener('resize', () => {
+      if(wrap._stickySync) wrap._stickySync();
+    });
   }
   // 关键：等待浏览器完成布局（多帧）后再读真实宽度。
   // 单次 requestAnimationFrame 不够，因为 innerHTML= 触发的回流在调用栈返回后才完成。
