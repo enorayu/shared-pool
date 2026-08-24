@@ -4309,6 +4309,29 @@ function _setupStickyHeader(tabId){
   // 关键: innerHTML= 触发的回流在调用栈返回后才完成，立即 sync 读到的是 0 宽。
   // 用 setTimeout(80ms) 保证布局稳定，且 setTimeout 一定执行（rAF 在部分场景会不触发）。
   sync();
+  // 持续稳定器: 每 80ms 跑一次 sync 直到 tboody td 总宽连续 3 次保持一致,
+  // 这是最稳的列宽对齐方式, 解决首次 80ms sync 时某些 td 内容尚未渲染导致宽度偏小。
+  let _stableCount = 0;
+  let _lastTotalW = -1;
+  const _stableTick = setInterval(() => {
+    sync();
+    const tbody = tab.querySelector('tbody');
+    const realRow = tbody ? tbody.querySelector('tr') : null;
+    if(!realRow){ return; }
+    let total = 0;
+    realRow.querySelectorAll('td').forEach(td => {
+      total += Math.round(td.getBoundingClientRect().width);
+    });
+    if(total === _lastTotalW && total > 0){
+      _stableCount++;
+      if(_stableCount >= 3){
+        clearInterval(_stableTick);
+      }
+    } else {
+      _stableCount = 0;
+      _lastTotalW = total;
+    }
+  }, 80);
   setTimeout(() => {
     sync();
     // 测出 thead 原高 (display:none 还没设上, 此时拿到真实高度)
@@ -4321,8 +4344,10 @@ function _setupStickyHeader(tabId){
       wrap.style.paddingTop = thH + 'px';
       fake.style.display = 'block';
     }
-    // 双保险：数据/字体异步回流后宽度可能再变, 250ms 再 sync 一次。
-    setTimeout(() => { sync(); }, 250);
+    // 双保险：setTimeout(200ms) 再 sync 一次确保显示尺寸就绪
+    setTimeout(() => { sync(); }, 200);
+    // 5 秒后强制清理稳定器 (防止布局长期不稳时挂死)
+    setTimeout(() => clearInterval(_stableTick), 5000);
   }, 80);
 }
 
