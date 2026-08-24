@@ -4231,126 +4231,25 @@ function _setupStickyHeader(tabId){
   const wrap = tab.parentElement;
   const thead = tab.querySelector('thead');
   if(!thead) return;
-  let fake = document.getElementById(tabId+'-sticky-fake');
-  if(!fake){
-    fake = document.createElement('div');
-    fake.id = tabId+'-sticky-fake';
-    // 关键设计: fake 插入到 wrap 最前面、和真实 <table> 同级、宽度=表格 scrollWidth。
-    // 两者都受 wrap (overflow-x:auto) 横向裁剪，横向滚动时自然同步。
-    // fake 用 position:sticky;top:0 垂直吸附在 wrap 顶部——与真实表格列对齐、不会被横向滚截断。
-    // 注意: 不能用 transform/will-change:transform,会破坏 sticky。
-    fake.style.cssText = 'position:sticky;top:0;left:0;z-index:6;display:none;pointer-events:none;background:linear-gradient(180deg,#f8f9fa 0%,#f1f3f5 100%);overflow:visible;border-radius:10px 10px 0 0;box-sizing:border-box';
-    wrap.insertBefore(fake, wrap.firstChild);
+  // 清理遗留 fake (修复历史版本): 之前用 clone div 模拟吸顶, fake 列宽与真实 td 经常错位 (108px),
+  // fake 内长标题(Backlink Type/MeUp价格/Ref. Domains)还会溢出挤压相邻列。改用 native thead sticky,
+  // 真实 <thead><tr><th> 与 <tbody><tr><td> 共用同一 column 模型, 列宽天然 100% 对齐, 无错位。
+  const oldFake = document.getElementById(tabId+'-sticky-fake');
+  if(oldFake){
+    oldFake.remove();
+    // 历史 fake d2a5f4f 把 thead 设了 display:none, 需还原, 否则 thead 不渲染。
+    thead.style.display = '';
   }
-  // 克隆 thead (脱离 Chromium 表格布局的特殊 overflow:hidden)
-  const cloneTable = document.createElement('table');
-  cloneTable.className = tab.className;
-  // 关键: fake 容器宽度 = wrap.clientWidth (可见宽)，内部 cloneTable 宽度 = tab.scrollWidth (实际表格总宽)。
-  // wrap overflow:auto 提供横向滚动条。fake 内部 cloneTable 与真实表格列宽一一对应 (width = 真实 td 宽)，
-  // 宽度跟真实表完全一致。当 wrap.scrollLeft > 0 时，让 fake transform:translateX(-wrap.scrollLeft) 跟随。
-  cloneTable.style.cssText = 'font-size:11px;border-collapse:separate;border-spacing:0;width:100%;background:transparent;border:0;display:table;table-layout:auto';
-  const cloneThead = document.createElement('thead');
-  cloneThead.innerHTML = thead.innerHTML;
-  cloneTable.appendChild(cloneThead);
-  fake.innerHTML = '';
-  fake.appendChild(cloneTable);
-// fake th 样式: 列名不截断 (让最右列也能完整显示)。fake 容器 overflow 留给 CSS。
-    cloneTable.querySelectorAll('th').forEach(c => {
-      c.style.cssText = 'padding:4px 7px;font-size:11px;font-weight:600;white-space:nowrap;border-bottom:0.5px solid var(--border);border-right:0.5px solid var(--border);background:transparent;text-align:left;color:var(--text);box-sizing:border-box;min-width:fit-content';
-    });
-  // 同步函数：从 tbody 第一行 <td> 读真实列宽 (非 thead th——)
-  // Chromium 表格布局下 thead 与 tbody 的列宽计算可能不一致，
-  // 表格整体列宽由 tbody 最长内容决定；thead th 显示宽度是文字宽，
-  // 但实际占据的列宽跟 tbody 一致——若取 th 宽会与 td 不对齐)。
-  // 不再给 fake th 强制锁宽（之前用 !important 锁 td 宽反而把 fake 总宽限制成 wrap.clientWidth,
-    // 导致右侧列名被裁）。现在 fake th 不设固定宽度，让 cloneTable 由列名内容自然撑开，
-    // fake 容器 width 强制 = tab.scrollWidth。两者一起被 wrap overflow-x:auto 横向裁剪，
-    // 列名完整可见、水平滚动同步。
-    // 同步函数：从 tbody 第一行 <td> 读真实列宽, 强制写到 fake th 上保证列对齐。
-    // 之前 d2a5f4f 砍掉!important 锁宽是因为 fake 容器 width 锁了 wrap.clientWidth,
-    // 导致列名被裁。现在 fake 容器不显式锁宽, fake th 用 !important 锁真实 td 宽,
-    // cloneTable width:auto 让 th 自然撑开总和 = tab.scrollWidth, wrap overflow-x:auto
-    // 提供横向滚动条 —— fake th 与真实 td 一一对齐, 列名完整不截断。
-    const sync = () => {
-      const fakeCells = cloneTable.querySelectorAll('th');
-      if(!fakeCells.length) return;
-      const tbody = tab.querySelector('tbody');
-      const realRow = tbody ? tbody.querySelector('tr') : null;
-      if(!realRow){ return; }  // 无数据行则不渲染 fake 表头
-      const realCells = realRow.querySelectorAll('td');
-      if(realCells.length !== fakeCells.length) { return; }
-      // 强制把真实 td 宽写到 fake th (列对齐关键)
-      let sumFakeW = 0;
-      for(let i=0; i<fakeCells.length; i++){
-        const w = Math.round(realCells[i].getBoundingClientRect().width);
-        if(w > 0){
-          fakeCells[i].style.setProperty('width', w + 'px', 'important');
-          fakeCells[i].style.setProperty('min-width', w + 'px', 'important');
-          fakeCells[i].style.setProperty('max-width', w + 'px', 'important');
-          sumFakeW += w;
-        }
-      }
-      // fake 容器不锁有限宽, 让 fake 总宽由 th 自然撑开 = ∑ real td = tab.scrollWidth
-      // 这样最右列名完整可见, wrap overflow-x:auto 提供横向滚动条。
-      fake.style.removeProperty('width');
-      cloneTable.style.removeProperty('width');
-      if(sumFakeW > 0){
-        cloneTable.style.setProperty('width', sumFakeW + 'px', 'important');
-        fake.style.setProperty('width', sumFakeW + 'px', 'important');
-      }
-    };
-  // fake 和 <table> 同在 wrap 内被 wrap overflow-x:auto 横向一起裁剪，所以无须 scroll 监听做平移。
-  // 只保留 resize 触发重新对齐列宽。
-  if(wrap._stickySync){
-    wrap._stickySync = sync;
-  } else {
-    wrap._stickySync = sync;
-    window.addEventListener('resize', () => {
-      if(wrap._stickySync) wrap._stickySync();
-    });
-  }
-  // 关键: innerHTML= 触发的回流在调用栈返回后才完成，立即 sync 读到的是 0 宽。
-  // 用 setTimeout(80ms) 保证布局稳定，且 setTimeout 一定执行（rAF 在部分场景会不触发）。
-  sync();
-  // 持续稳定器: 每 80ms 跑一次 sync 直到 tboody td 总宽连续 3 次保持一致,
-  // 这是最稳的列宽对齐方式, 解决首次 80ms sync 时某些 td 内容尚未渲染导致宽度偏小。
-  let _stableCount = 0;
-  let _lastTotalW = -1;
-  const _stableTick = setInterval(() => {
-    sync();
-    const tbody = tab.querySelector('tbody');
-    const realRow = tbody ? tbody.querySelector('tr') : null;
-    if(!realRow){ return; }
-    let total = 0;
-    realRow.querySelectorAll('td').forEach(td => {
-      total += Math.round(td.getBoundingClientRect().width);
-    });
-    if(total === _lastTotalW && total > 0){
-      _stableCount++;
-      if(_stableCount >= 3){
-        clearInterval(_stableTick);
-      }
-    } else {
-      _stableCount = 0;
-      _lastTotalW = total;
-    }
-  }, 80);
-  setTimeout(() => {
-    sync();
-    // 测出 thead 原高 (display:none 还没设上, 此时拿到真实高度)
-    const theadEl = tab.querySelector('thead');
-    const thH = theadEl.getBoundingClientRect().height;
-    if(thH > 0){
-      // 关键: thead 直接 display:none，从视觉和布局上完全让出顶部位置,
-      // 避免双表头叠加 (图 1 问题) ; fake 是 absolute 浮在表格上方，不需要真实表格让位。
-      theadEl.style.display = 'none';
-      fake.style.display = 'block';
-    }
-    // 双保险：setTimeout(200ms) 再 sync 一次确保显示尺寸就绪
-    setTimeout(() => { sync(); }, 200);
-    // 5 秒后强制清理稳定器 (防止布局长期不稳时挂死)
-    setTimeout(() => clearInterval(_stableTick), 5000);
-  }, 80);
+  // 设置 thead th 为吸顶 + 列名可换行 (避免换行后溢出挤压相邻列);
+  // 因为浏览器布局下 thead 与 tbody 共享 column model, th 宽 = 同列 td 宽 (完全相等, 无需手动 sync).
+  thead.querySelectorAll('th').forEach(th => {
+    // 还原之前可能被 fake 代码 setProperty 锁过的 width/min/max, 让 column 模型自动算宽。
+    th.style.removeProperty('width');
+    th.style.removeProperty('min-width');
+    th.style.removeProperty('max-width');
+    th.removeAttribute('width');
+    th.style.cssText = 'position:sticky;top:0;z-index:6;background:linear-gradient(180deg,#f8f9fa 0%,#f1f3f5 100%);padding:6px 7px;font-size:11px;font-weight:600;border-bottom:1px solid var(--border);border-right:0.5px solid var(--border);text-align:left;color:var(--text);box-sizing:border-box;white-space:normal;overflow-wrap:anywhere;line-height:1.25;vertical-align:bottom';
+  });
 }
 
 async function loadQuoteTable(){
