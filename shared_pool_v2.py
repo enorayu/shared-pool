@@ -4266,22 +4266,37 @@ function _setupStickyHeader(tabId){
     // 导致右侧列名被裁）。现在 fake th 不设固定宽度，让 cloneTable 由列名内容自然撑开，
     // fake 容器 width 强制 = tab.scrollWidth。两者一起被 wrap overflow-x:auto 横向裁剪，
     // 列名完整可见、水平滚动同步。
-    // 同步函数：从 tbody 第一行 <td> 读真实列宽, 但本次只用列数 sanity check, 不强行锁 fake th 宽。
+    // 同步函数：从 tbody 第一行 <td> 读真实列宽, 强制写到 fake th 上保证列对齐。
+    // 之前 d2a5f4f 砍掉!important 锁宽是因为 fake 容器 width 锁了 wrap.clientWidth,
+    // 导致列名被裁。现在 fake 容器不显式锁宽, fake th 用 !important 锁真实 td 宽,
+    // cloneTable width:auto 让 th 自然撑开总和 = tab.scrollWidth, wrap overflow-x:auto
+    // 提供横向滚动条 —— fake th 与真实 td 一一对齐, 列名完整不截断。
     const sync = () => {
       const fakeCells = cloneTable.querySelectorAll('th');
       if(!fakeCells.length) return;
-      // 只读 tbody 真实 td 宽度作为 sanity check，不写到 fake th 上 (会破坏 fake 自由撑开)。
       const tbody = tab.querySelector('tbody');
       const realRow = tbody ? tbody.querySelector('tr') : null;
       if(!realRow){ return; }  // 无数据行则不渲染 fake 表头
       const realCells = realRow.querySelectorAll('td');
       if(realCells.length !== fakeCells.length) { return; }
-      // 关键: fake 容器宽度 = 表格真实总宽(tab.scrollWidth), 不设有限长度 -> 所有列名完整显示。
-      // 用 !important 强制覆盖, 即使内部 cloneTable 的 width 失效 fake 容器也保持正确宽。
-      const tabScrollW = tab.scrollWidth || 0;
-      if(tabScrollW > 0){
-        fake.style.setProperty('width', tabScrollW + 'px', 'important');
-        cloneTable.style.setProperty('width', tabScrollW + 'px', 'important');
+      // 强制把真实 td 宽写到 fake th (列对齐关键)
+      let sumFakeW = 0;
+      for(let i=0; i<fakeCells.length; i++){
+        const w = Math.round(realCells[i].getBoundingClientRect().width);
+        if(w > 0){
+          fakeCells[i].style.setProperty('width', w + 'px', 'important');
+          fakeCells[i].style.setProperty('min-width', w + 'px', 'important');
+          fakeCells[i].style.setProperty('max-width', w + 'px', 'important');
+          sumFakeW += w;
+        }
+      }
+      // fake 容器不锁有限宽, 让 fake 总宽由 th 自然撑开 = ∑ real td = tab.scrollWidth
+      // 这样最右列名完整可见, wrap overflow-x:auto 提供横向滚动条。
+      fake.style.removeProperty('width');
+      cloneTable.style.removeProperty('width');
+      if(sumFakeW > 0){
+        cloneTable.style.setProperty('width', sumFakeW + 'px', 'important');
+        fake.style.setProperty('width', sumFakeW + 'px', 'important');
       }
     };
   // fake 和 <table> 同在 wrap 内被 wrap overflow-x:auto 横向一起裁剪，所以无须 scroll 监听做平移。
