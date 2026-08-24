@@ -4277,12 +4277,14 @@ function _setupStickyHeader(tabId){
         totalW += w;
       }
     });
-    // 关键：fake 容器宽度 = 真实表格的内容总宽（scrollWidth，含溢出部分），
-    // 而不是各 th 宽度之和。table-layout:fixed 下若 cloneTable 宽度 < 各列之和，
-    // 浏览器会按比例压缩列宽 -> 错位。让内部 table 自然按 th 宽度展开。
+    // 关键：fake 容器宽度 = 真实表格可见宽度(clientWidth)，内部 table 宽度 = 内容总宽(scrollWidth)。
+    // fake 容器是 absolute 覆盖在 wrap 上，宽度必须锁成可见宽度，否则会比 wrap 宽 ->
+    // table-layout:fixed 下内部列被等比拉伸错位。内部 cloneTable 宽度跟真实表格 scrollWidth 一致，
+    // 各列 th 宽度用真实 td 宽度，布局定义与真实表格完全相同 -> 必然对齐。
+    const tabClientW = tab.clientWidth || tab.getBoundingClientRect().width;
     const tabScrollW = tab.scrollWidth || totalW;
-    fake.style.width = tabScrollW + 'px';
-    cloneTable.style.width = 'auto';
+    fake.style.width = tabClientW + 'px';
+    cloneTable.style.width = tabScrollW + 'px';
     cloneTable.style.tableLayout = 'fixed';
     // 校准 fake left：真实表格可能因 wrap 内边距/scrollbar 有偏移
     const tabRect = tab.getBoundingClientRect();
@@ -4320,6 +4322,8 @@ function _setupStickyHeader(tabId){
       thead.style.position = 'absolute';
       thead.style.top = '0';
     }
+    // 双保险：数据/字体异步回流后宽度可能再变，250ms 再 sync 一次。
+    setTimeout(() => { sync(); }, 250);
   }, 80);
 }
 
