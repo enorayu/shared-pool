@@ -4263,6 +4263,7 @@ function _setupStickyHeader(tabId){
     const tbody = tab.querySelector('tbody');
     const realRow = tbody ? tbody.querySelector('tr') : null;
     const realCells = realRow ? realRow.querySelectorAll('td, th') : tab.querySelectorAll('thead th');
+    console.log('[sticky-sync]', tabId, 'tbody?', !!tbody, 'realRow?', !!realRow, 'realCellsCount=', realCells.length, 'firstRowText=', realRow ? realRow.textContent.trim().slice(0,30) : 'NULL');
     let totalW = 0;
     fakeCells.forEach((c, i) => {
       const real = realCells[i];
