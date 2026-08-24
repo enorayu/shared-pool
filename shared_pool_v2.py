@@ -4259,15 +4259,11 @@ function _setupStickyHeader(tabId){
   const sync = () => {
     const fakeCells = cloneTable.querySelectorAll('th');
     if(!fakeCells.length) return;
-    // 优先读 tbody 真实 td 宽度；如不存在再退回 thead th。
+    // 只读 tbody 真实 td 宽度（thead th 的宽度由文字决定，与内容列宽不一致，不可用）。
     const tbody = tab.querySelector('tbody');
     const realRow = tbody ? tbody.querySelector('tr') : null;
-    const realCells = realRow ? realRow.querySelectorAll('td, th') : tab.querySelectorAll('thead th');
-    console.log('[sticky-sync]', tabId, 'tbody?', !!tbody, 'realRow?', !!realRow, 'realCellsCount=', realCells.length, 'firstRowText=', realRow ? realRow.textContent.trim().slice(0,30) : 'NULL');
-    if (realRow) {
-      const widths = Array.from(realCells).slice(0,6).map(c => ({text: c.textContent.trim().slice(0,10), w: Math.round(c.getBoundingClientRect().width)}));
-      console.log('[sticky-sync]', tabId, 'realWidths=', JSON.stringify(widths));
-    }
+    if(!realRow){ return; }  // 无数据行则不渲染 fake 表头
+    const realCells = realRow.querySelectorAll('td');
     let totalW = 0;
     fakeCells.forEach((c, i) => {
       const real = realCells[i];
@@ -4281,8 +4277,13 @@ function _setupStickyHeader(tabId){
         totalW += w;
       }
     });
-    fake.style.width = totalW + 'px';
-    cloneTable.style.width = totalW + 'px';
+    // 关键：fake 容器宽度 = 真实表格的内容总宽（scrollWidth，含溢出部分），
+    // 而不是各 th 宽度之和。table-layout:fixed 下若 cloneTable 宽度 < 各列之和，
+    // 浏览器会按比例压缩列宽 -> 错位。让内部 table 自然按 th 宽度展开。
+    const tabScrollW = tab.scrollWidth || totalW;
+    fake.style.width = tabScrollW + 'px';
+    cloneTable.style.width = 'auto';
+    cloneTable.style.tableLayout = 'fixed';
     // 校准 fake left：真实表格可能因 wrap 内边距/scrollbar 有偏移
     const tabRect = tab.getBoundingClientRect();
     const wrapRect = wrap.getBoundingClientRect();
