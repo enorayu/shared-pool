@@ -4231,13 +4231,14 @@ function _setupStickyHeader(tabId){
   const wrap = tab.parentElement;
   const thead = tab.querySelector('thead');
   if(!thead) return;
+  const parent = wrap.parentElement;
   let fake = document.getElementById(tabId+'-sticky-fake');
   if(!fake){
     fake = document.createElement('div');
     fake.id = tabId+'-sticky-fake';
-    fake.style.cssText = 'position:absolute;top:0;left:0;z-index:5;display:none;pointer-events:none;background:linear-gradient(180deg,#f8f9fa 0%,#f1f3f5 100%);overflow:hidden;border-radius:10px 10px 0 0;box-sizing:border-box';
-    wrap.style.position = 'relative';
-    wrap.appendChild(fake);
+    fake.style.cssText = 'position:absolute;top:0;left:0;z-index:6;display:none;pointer-events:none;background:linear-gradient(180deg,#f8f9fa 0%,#f1f3f5 100%);overflow:visible;border-radius:10px 10px 0 0;box-sizing:border-box;will-change:transform';
+    parent.style.position = 'relative';
+    parent.appendChild(fake);
   }
   // 克隆 thead (脱离 Chromium 表格布局的特殊 overflow:hidden)
   const cloneTable = document.createElement('table');
@@ -4245,7 +4246,7 @@ function _setupStickyHeader(tabId){
   // 关键: fake 容器宽度 = wrap.clientWidth (可见宽)，内部 cloneTable 宽度 = tab.scrollWidth (实际表格总宽)。
   // wrap overflow:auto 提供横向滚动条。fake 内部 cloneTable 与真实表格列宽一一对应 (width = 真实 td 宽)，
   // 宽度跟真实表完全一致。当 wrap.scrollLeft > 0 时，让 fake transform:translateX(-wrap.scrollLeft) 跟随。
-  cloneTable.style.cssText = 'font-size:11px;border-collapse:separate;border-spacing:0;width:100%;background:transparent;border:0;display:table;table-layout:auto';
+  cloneTable.style.cssText = 'font-size:11px;border-collapse:separate;border-spacing:0;width:auto;background:transparent;border:0;display:table;table-layout:auto';
   const cloneThead = document.createElement('thead');
   cloneThead.innerHTML = thead.innerHTML;
   cloneTable.appendChild(cloneThead);
@@ -4279,19 +4280,16 @@ function _setupStickyHeader(tabId){
         c.style.setProperty('max-width', w + 'px', 'important');
       }
     });
-    // fake 容器宽度 = wrap.clientWidth (可见宽), 不等于 tab.offsetWidth 因为 tab 可能溢出 wrap。
-    // fake 容器 overflow:hidden 锁可见宽，内部 cloneTable 宽度 = tab.scrollWidth 让 fake 内表格与真表总宽一致。
-    const wrapW = wrap.clientWidth || wrap.getBoundingClientRect().width;
-    const tabScrollW = tab.scrollWidth;
-    fake.style.width = wrapW + 'px';
+    // 关键: fake 容器宽度 = 表格真实总宽(tab.scrollWidth)，不设有限长度 → 所有列名完整显示。
+    // 之前设成 wrap.clientWidth 导致右侧列名被裁，这是 bug 根源。
+    const tabScrollW = tab.scrollWidth || totalW;
+    fake.style.width = tabScrollW + 'px';
     cloneTable.style.width = tabScrollW + 'px';
-    // 校准 fake left：真实表格可能因 wrap 内边距/scrollbar 有偏移
-    const tabRect = tab.getBoundingClientRect();
-    const wrapRect = wrap.getBoundingClientRect();
-    const leftOffset = Math.round(tabRect.left - wrapRect.left);
-    fake.style.left = leftOffset + 'px';
-    // 同步水平偏移: wrap.scrollLeft > 0 时, 让 fake 内 cloneTable 反向平移贴合真实表
-    fake.style.transform = 'translate(' + (-wrap.scrollLeft) + 'px, ' + wrap.scrollTop + 'px)';
+    // fake 容器定位: 起点对齐 wrap 在 parent 内的位置 (offsetLeft/offsetTop)
+    fake.style.left = (wrap.offsetLeft || 0) + 'px';
+    fake.style.top = (wrap.offsetTop || 0) + 'px';
+    // 横向跟随: wrap 横向滚动时 fake 表头整体左移，始终跟下方真实表格对齐
+    fake.style.transform = 'translateX(' + (-wrap.scrollLeft) + 'px)';
   };
   // 每次 loadXxxTable 重建 fake，必须每次都注册新的 sync 闭包到 wrap 上。
   if(wrap._stickySync){
@@ -4300,7 +4298,7 @@ function _setupStickyHeader(tabId){
     wrap._stickySync = sync;
     wrap.addEventListener('scroll', () => {
       const f = document.getElementById(tabId + '-sticky-fake');
-      if(f) f.style.transform = 'translate(' + (-wrap.scrollLeft) + 'px, ' + wrap.scrollTop + 'px)';
+      if(f) f.style.transform = 'translateX(' + (-wrap.scrollLeft) + 'px)';
     });
     window.addEventListener('resize', () => {
       if(wrap._stickySync) wrap._stickySync();
@@ -4339,9 +4337,8 @@ function _setupStickyHeader(tabId){
     const thH = theadEl.getBoundingClientRect().height;
     if(thH > 0){
       // 关键: thead 直接 display:none，从视觉和布局上完全让出顶部位置,
-      // 避免双表头叠加 (图 1 问题) ; 用 paddingTop 留位给 fake。
+      // 避免双表头叠加 (图 1 问题) ; fake 是 absolute 浮在表格上方，不需要真实表格让位。
       theadEl.style.display = 'none';
-      wrap.style.paddingTop = thH + 'px';
       fake.style.display = 'block';
     }
     // 双保险：setTimeout(200ms) 再 sync 一次确保显示尺寸就绪
