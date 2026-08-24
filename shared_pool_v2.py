@@ -4223,7 +4223,7 @@ function onReplyPageSizeChange(){
 
 // 用 fake fixed header (JS-driven) 替代 CSS sticky
 // 原因: <table> 元素默认 overflow:hidden 钳死 sticky <th>，CSS 改不掉
-// 做法: 克隆 thead 到容器顶部的 absolute div，scroll 时同步 translateY
+// 做法: 克隆 thead 到容器顶部的 absolute div，scroll 时同步 translateY；原 thead 直接 display:none 留出顶部 paddingTop 给 fake。
 function _setupStickyHeader(tabId){
   const tab = document.getElementById(tabId);
   if(!tab) return;
@@ -4234,32 +4234,34 @@ function _setupStickyHeader(tabId){
   if(!fake){
     fake = document.createElement('div');
     fake.id = tabId+'-sticky-fake';
-    fake.style.cssText = 'position:absolute;top:0;left:0;z-index:5;display:none;pointer-events:none;background:linear-gradient(180deg,#f8f9fa 0%,#f1f3f5 100%);overflow:hidden;border-radius:10px 10px 0 0';
+    fake.style.cssText = 'position:absolute;top:0;left:0;z-index:5;display:none;pointer-events:none;background:linear-gradient(180deg,#f8f9fa 0%,#f1f3f5 100%);overflow:hidden;border-radius:10px 10px 0 0;box-sizing:border-box';
     wrap.style.position = 'relative';
     wrap.appendChild(fake);
   }
   // 克隆 thead (脱离 Chromium 表格布局的特殊 overflow:hidden)
   const cloneTable = document.createElement('table');
   cloneTable.className = tab.className;
-  // table-layout:fixed 让 fake 列宽严格按 th width 属性定值（无视内容撑开）
-  cloneTable.style.cssText = 'font-size:11px;border-collapse:separate;border-spacing:0;width:100%;table-layout:fixed;background:transparent;border:0;display:table';
+  // 关键: 不要 table-layout:fixed。Chromium table-layout:fixed 下若容器宽度 < 各列宽度之和，
+  // 会按比例压缩列宽错位。我们让 fake 容器锁可见宽、内部 table 用自然布局 + 各 th 设真实 td 宽，
+  // 容器 overflow:hidden 裁掉超出 -> fake 内永远只显示一整行，不会出现右侧被截断。
+  cloneTable.style.cssText = 'font-size:11px;border-collapse:separate;border-spacing:0;width:auto;background:transparent;border:0;display:table;table-layout:auto';
   const cloneThead = document.createElement('thead');
   cloneThead.innerHTML = thead.innerHTML;
   cloneTable.appendChild(cloneThead);
   fake.innerHTML = '';
   fake.appendChild(cloneTable);
-  // fake th 样式：去掉 white-space:nowrap（按真实列宽严格裁剪）+ 加 box-sizing:border-box
+  // fake th 样式: white-space:nowrap + box-sizing:border-box, fake 容器 overflow:hidden 裁剪
   cloneTable.querySelectorAll('th').forEach(c => {
     c.style.cssText = 'padding:4px 7px;font-size:11px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-bottom:0.5px solid var(--border);border-right:0.5px solid var(--border);background:transparent;text-align:left;color:var(--text);box-sizing:border-box';
   });
-  // 同步函数：从 tbody 第一行 <td> 读真实列宽（而非 thead <th>——
+  // 同步函数：从 tbody 第一行 <td> 读真实列宽直接写到 fake th (非 thead th——)
   // Chromium 表格布局下 thead 与 tbody 的列宽计算可能不一致，
   // 表格整体列宽由 tbody 最长内容决定；thead th 显示宽度是文字宽，
   // 但实际占据的列宽跟 tbody 一致——若取 th 宽会与 td 不对齐）。
   const sync = () => {
     const fakeCells = cloneTable.querySelectorAll('th');
     if(!fakeCells.length) return;
-    // 只读 tbody 真实 td 宽度（thead th 的宽度由文字决定，与内容列宽不一致，不可用）。
+    // 只读 tbody 真实 td 宽度 (thead th 的宽度由文字决定，与内容列宽不一致，不可用)。
     const tbody = tab.querySelector('tbody');
     const realRow = tbody ? tbody.querySelector('tr') : null;
     if(!realRow){ return; }  // 无数据行则不渲染 fake 表头
@@ -4271,21 +4273,19 @@ function _setupStickyHeader(tabId){
       const r = real.getBoundingClientRect();
       const w = Math.round(r.width);
       if(w > 0){
+        // 用 !important 覆盖 cssText 里的默认值
         c.style.setProperty('width', w + 'px', 'important');
         c.style.setProperty('min-width', w + 'px', 'important');
         c.style.setProperty('max-width', w + 'px', 'important');
         totalW += w;
       }
     });
-    // 关键：fake 容器宽度 = 真实表格可见宽度(clientWidth)，内部 table 宽度 = 内容总宽(scrollWidth)。
-    // fake 容器是 absolute 覆盖在 wrap 上，宽度必须锁成可见宽度，否则会比 wrap 宽 ->
-    // table-layout:fixed 下内部列被等比拉伸错位。内部 cloneTable 宽度跟真实表格 scrollWidth 一致，
-    // 各列 th 宽度用真实 td 宽度，布局定义与真实表格完全相同 -> 必然对齐。
-    const tabClientW = tab.clientWidth || tab.getBoundingClientRect().width;
-    const tabScrollW = tab.scrollWidth || totalW;
-    fake.style.width = tabClientW + 'px';
-    cloneTable.style.width = tabScrollW + 'px';
-    cloneTable.style.tableLayout = 'fixed';
+    // fake 容器宽度 = 真实表格可见宽 (offsetWidth 含 border, clientWidth 不含) 。
+    // fake 容器 overflow:hidden, 内部 cloneTable 自然布局 (不用 fixed)，
+    // 当各 th 总宽 > fake 容器时, fake 内部出现溢出被裁 -> fake 始终只显示一整行,
+    // 不会出现图 2 "右侧被截一半列名" 的问题。
+    const tabW = tab.offsetWidth || tab.clientWidth || tab.getBoundingClientRect().width;
+    fake.style.width = tabW + 'px';
     // 校准 fake left：真实表格可能因 wrap 内边距/scrollbar 有偏移
     const tabRect = tab.getBoundingClientRect();
     const wrapRect = wrap.getBoundingClientRect();
@@ -4295,12 +4295,11 @@ function _setupStickyHeader(tabId){
   // 每次 loadXxxTable 重建 fake，必须每次都注册新的 sync 闭包到 wrap 上。
   // wrap._stickySync 之前设计成单例是错的，会导致后续 load 时新 fake 永远不被同步。
   if(wrap._stickySync){
-    // 已注册 scroll/resize 监听；只更新 sync 引用即可（监听器读 wrap._stickySync()）。
+    // 已注册 scroll/resize 监听；只更新 sync 引用即可 (监听器读 wrap._stickySync())。
     wrap._stickySync = sync;
   } else {
     wrap._stickySync = sync;
     wrap.addEventListener('scroll', () => {
-      // 用 ref 函数实时读最新 fake（避免旧 fake 引用闭包）
       const f = document.getElementById(tabId + '-sticky-fake');
       if(f) f.style.transform = 'translateY(' + wrap.scrollTop + 'px)';
     });
@@ -4310,19 +4309,18 @@ function _setupStickyHeader(tabId){
   }
   // 关键：innerHTML= 触发的回流在调用栈返回后才完成，立即 sync 读到的是 0 宽。
   // 用 setTimeout(80ms) 保证布局稳定，且 setTimeout 一定执行（rAF 在部分场景会不触发）。
-  // 同步调用一次（即便宽=0 也无害），再用 setTimeout 在布局完成后真正同步 + 显示 fake。
   sync();
   setTimeout(() => {
     sync();
     const thH = thead.getBoundingClientRect().height;
     if(thH > 0){
+      // 关键: thead 直接 display:none，从视觉和布局上完全让出顶部位置,
+      // 避免双表头叠加 (图 1 问题) ; 用 paddingTop 留位给 fake。
+      thead.style.display = 'none';
       wrap.style.paddingTop = thH + 'px';
       fake.style.display = 'block';
-      thead.style.visibility = 'hidden';
-      thead.style.position = 'absolute';
-      thead.style.top = '0';
     }
-    // 双保险：数据/字体异步回流后宽度可能再变，250ms 再 sync 一次。
+    // 双保险：数据/字体异步回流后宽度可能再变, 250ms 再 sync 一次。
     setTimeout(() => { sync(); }, 250);
   }, 80);
 }
