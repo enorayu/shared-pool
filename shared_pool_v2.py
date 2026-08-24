@@ -4252,14 +4252,20 @@ function _setupStickyHeader(tabId){
   cloneTable.querySelectorAll('th').forEach(c => {
     c.style.cssText = 'padding:4px 7px;font-size:11px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-bottom:0.5px solid var(--border);border-right:0.5px solid var(--border);background:transparent;text-align:left;color:var(--text);box-sizing:border-box';
   });
-  // 同步函数：严格按真实 th 宽度设到 fake th（inline width = Xpx, !important 防御样式表）
+  // 同步函数：从 tbody 第一行 <td> 读真实列宽（而非 thead <th>——
+  // Chromium 表格布局下 thead 与 tbody 的列宽计算可能不一致，
+  // 表格整体列宽由 tbody 最长内容决定；thead th 显示宽度是文字宽，
+  // 但实际占据的列宽跟 tbody 一致——若取 th 宽会与 td 不对齐）。
   const sync = () => {
-    const ths = tab.querySelectorAll('thead th');
     const fakeCells = cloneTable.querySelectorAll('th');
-    if(!ths.length || !fakeCells.length) return;
+    if(!fakeCells.length) return;
+    // 优先读 tbody 真实 td 宽度；如不存在再退回 thead th。
+    const tbody = tab.querySelector('tbody');
+    const realRow = tbody ? tbody.querySelector('tr') : null;
+    const realCells = realRow ? realRow.querySelectorAll('td, th') : tab.querySelectorAll('thead th');
     let totalW = 0;
     fakeCells.forEach((c, i) => {
-      const real = ths[i];
+      const real = realCells[i];
       if(!real) return;
       const r = real.getBoundingClientRect();
       const w = Math.round(r.width);
