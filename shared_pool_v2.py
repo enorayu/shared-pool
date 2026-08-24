@@ -4240,15 +4240,52 @@ function _setupStickyHeader(tabId){
     // 历史 fake d2a5f4f 把 thead 设了 display:none, 需还原, 否则 thead 不渲染。
     thead.style.display = '';
   }
-  // 设置 thead th 为吸顶 + 列名可换行 (避免换行后溢出挤压相邻列);
-  // 因为浏览器布局下 thead 与 tbody 共享 column model, th 宽 = 同列 td 宽 (完全相等, 无需手动 sync).
+  // ⚠️ 整表宽度策略: td 中很多列是数字(DR/DA)或短文本(数字/country code/TAT), 没自然宽,
+  //    而 th 标题是英文短词/中文词组(如 Categories/Cooperation/Ref. Domains/Link Rules/Permanence/Contact)本来就窄列放不下。
+  //    - 用 `table-layout: auto` (浏览器默认) 下, 浏览器会按 "th 内容需要的最小宽" 算列宽, 严禁再用 overflow-wrap:anywhere 否则会把英文单词按字符断行成竖排 ("Categories" 拆成 "C/a/t/e/g/o/r/i/e/s")。
+  //    - 这里直接给 wrap 显式 `min-width: max-content`, 让表格撑开成它真正需要的总宽 (即使超过 wrap 父容器也没关系, 外层 overflow:auto 会出横向滚动条),
+  //    - 再针对已知易被压窄的列(Languages/Permanence/Cooperation/Categories/Link Rules/Backlink Type/Ref. Domains/MeUp价格/Bazoom价格/Contact/Permanence/Price)给显式 min-width 兜底,
+  //      保证即使 td 空白列也能给 th 标题足够的横向空间换行。
+  wrap.style.minWidth = 'max-content';
+  // 通用列最小宽映射(只补容易压窄的列, 其他列按内容自适配)
+  const _MIN_WIDTH_BY_TEXT = {
+    'Link': '140px',
+    'Price': '90px',
+    'Backlink Type': '110px',
+    'DR': '60px',
+    'DA': '60px',
+    'MeUp价格': '110px',
+    'Meup Price': '110px',
+    'Bazoom价格': '110px',
+    'Bazoom Price': '110px',
+    'Ref. Domains': '110px',
+    'Traffic': '85px',
+    'Country': '80px',
+    'Categories': '95px',
+    'Languages': '105px',
+    'TAT': '75px',
+    'Permanence': '95px',
+    'Contact': '170px',
+    'Cooperation': '105px',
+    'Payment': '90px',
+    'Link Rules': '110px',
+    'Status': '80px',
+  };
+  // 设置 thead th 为吸顶 + 列名可整词换行 (避免每个字符断行成竖排)。
+  // 用 word-break:normal (按空格/语言默认断行点断, 不断英文单词中字符) + overflow-wrap:break-word (单词超出列宽时强制整词断行兜底),
+  // 比 overflow-wrap:anywhere 更保守, 不会出现 "C/a/t/e/g/o/r/i/e/s" 这种竖排事故。
   thead.querySelectorAll('th').forEach(th => {
     // 还原之前可能被 fake 代码 setProperty 锁过的 width/min/max, 让 column 模型自动算宽。
     th.style.removeProperty('width');
     th.style.removeProperty('min-width');
     th.style.removeProperty('max-width');
     th.removeAttribute('width');
-    th.style.cssText = 'position:sticky;top:0;z-index:6;background:linear-gradient(180deg,#f8f9fa 0%,#f1f3f5 100%);padding:6px 7px;font-size:11px;font-weight:600;border-bottom:1px solid var(--border);border-right:0.5px solid var(--border);text-align:left;color:var(--text);box-sizing:border-box;white-space:normal;overflow-wrap:anywhere;line-height:1.25;vertical-align:bottom';
+    const label = (th.textContent || '').trim();
+    const minW = _MIN_WIDTH_BY_TEXT[label];
+    // ⚠️ overflow-wrap:anywhere 会把英文单词按字符断行 ("Categories" 拆成 "C/a/t/e/g/o/r/i/e/s" 竖排);
+    //    改用 word-break:normal (允许整词换行, 但按空格断, 不切词中字符) + overflow-wrap:break-word
+    //    兼顾 "Ref. Domains" 这种长词在窄列里换行, 又不会把每个字母断成单字。
+    th.style.cssText = 'position:sticky;top:0;z-index:6;background:linear-gradient(180deg,#f8f9fa 0%,#f1f3f5 100%);padding:8px 7px;font-size:11px;font-weight:600;border-bottom:1px solid var(--border);border-right:0.5px solid var(--border);text-align:left;color:var(--text);box-sizing:border-box;white-space:normal;word-break:normal;overflow-wrap:break-word;line-height:1.3;vertical-align:bottom;min-width:' + (minW || '60px');
   });
 }
 
