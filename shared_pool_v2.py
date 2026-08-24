@@ -4214,10 +4214,75 @@ function changeReplyPage(delta){
   REPLY_PAGER.page=Math.max(1,REPLY_PAGER.page+delta);
   loadReplyTable();
 }
+
 function onReplyPageSizeChange(){
   REPLY_PAGER.pageSize=parseInt(document.getElementById('reply-page-size').value)||50;
   REPLY_PAGER.page=1;
   loadReplyTable();
+}
+
+// 用 fake fixed header (JS-driven) 替代 CSS sticky
+// 原因: <table> 元素默认 overflow:hidden 钳死 sticky <th>，CSS 改不掉
+// 做法: 克隆 thead 到容器顶部的 absolute div，scroll 时同步 translateY
+function _setupStickyHeader(tabId){
+  const tab = document.getElementById(tabId);
+  if(!tab) return;
+  const wrap = tab.parentElement;
+  const thead = tab.querySelector('thead');
+  if(!thead) return;
+  let fake = document.getElementById(tabId+'-sticky-fake');
+  if(!fake){
+    fake = document.createElement('div');
+    fake.id = tabId+'-sticky-fake';
+    fake.style.cssText = 'position:absolute;top:0;left:0;z-index:5;display:none;pointer-events:none;background:linear-gradient(180deg,#f8f9fa 0%,#f1f3f5 100%);overflow:hidden;border-radius:10px 10px 0 0';
+    wrap.style.position = 'relative';
+    wrap.appendChild(fake);
+  }
+  // 克隆 thead (脱离 Chromium 表格布局的特殊 overflow:hidden)
+  const cloneTable = document.createElement('table');
+  cloneTable.className = tab.className;
+  cloneTable.style.cssText = 'font-size:12px;border-collapse:separate;border-spacing:0;width:auto;min-width:100%;table-layout:auto;background:transparent;border:0;display:table';
+  const cloneThead = document.createElement('thead');
+  cloneThead.innerHTML = thead.innerHTML;
+  cloneTable.appendChild(cloneThead);
+  fake.innerHTML = '';
+  fake.appendChild(cloneTable);
+  // 同步函数
+  const sync = () => {
+    const ths = tab.querySelectorAll('thead th');
+    const fakeCells = cloneTable.querySelectorAll('th');
+    if(!ths.length) return;
+    fakeCells.forEach((c, i) => {
+      const real = ths[i];
+      if(!real) return;
+      const w = real.getBoundingClientRect().width;
+      if(w > 0) c.style.width = w + 'px';
+    });
+    const tabW = tab.getBoundingClientRect().width;
+    fake.style.width = tabW + 'px';
+    cloneTable.style.width = tabW + 'px';
+  };
+  cloneTable.querySelectorAll('th').forEach(c => {
+    c.style.cssText += ';padding:4px 7px;font-size:11px;font-weight:600;white-space:nowrap;border-bottom:0.5px solid var(--border);border-right:0.5px solid var(--border);background:transparent;text-align:left';
+  });
+  if(!wrap._stickySync){
+    wrap._stickySync = sync;
+    wrap.addEventListener('scroll', () => {
+      fake.style.transform = 'translateY(' + wrap.scrollTop + 'px)';
+    });
+    window.addEventListener('resize', sync);
+  }
+  sync();
+  requestAnimationFrame(() => {
+    const thH = thead.getBoundingClientRect().height;
+    if(thH > 0){
+      wrap.style.paddingTop = thH + 'px';
+      fake.style.display = 'block';
+      thead.style.visibility = 'hidden';
+      thead.style.position = 'absolute';
+      thead.style.top = '0';
+    }
+  });
 }
 
 async function loadQuoteTable(){
@@ -4311,6 +4376,7 @@ async function loadQuoteTable(){
     }).join('');
 
   document.getElementById('quote-table').innerHTML='<thead>'+th+'</thead><tbody>'+tb+'</tbody>';
+  _setupStickyHeader('quote-table');
   _updateSelCount(QUOTE_SEL,'quote-sel-count','quote-delete-btn');
   document.getElementById('quote-delete-btn').style.display=QUOTE_SEL.size?'inline-block':'none';
   document.getElementById('quote-page-info').textContent='Page '+QUOTE_PAGER.page+' / '+maxPage+' ('+total+' records)';
@@ -4798,6 +4864,7 @@ async function loadPriceTable(){
     '</tr>';
   }).join('');
   document.getElementById('price-table').innerHTML='<thead>'+th+'</thead><tbody>'+tb+'</tbody>';
+  _setupStickyHeader('price-table');
   document.getElementById('price-page-info').textContent='Page '+PRICE_PAGER.page+' / '+maxPage+' ('+total+' records)';
 }
 
