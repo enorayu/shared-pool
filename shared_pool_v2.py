@@ -4310,7 +4310,7 @@ async function loadQuoteTable(){
       </tr>`;
     }).join('');
 
-  document.getElementById('quote-table').innerHTML=th+tb;
+  document.getElementById('quote-table').innerHTML='<thead>'+th+'</thead><tbody>'+tb+'</tbody>';
   _updateSelCount(QUOTE_SEL,'quote-sel-count','quote-delete-btn');
   document.getElementById('quote-delete-btn').style.display=QUOTE_SEL.size?'inline-block':'none';
   document.getElementById('quote-page-info').textContent='Page '+QUOTE_PAGER.page+' / '+maxPage+' ('+total+' records)';
@@ -4797,7 +4797,7 @@ async function loadPriceTable(){
       '<td><span class="status-'+(q.status||'New')+'">'+esc2(q.status||'New')+'</span></td>'+
     '</tr>';
   }).join('');
-  document.getElementById('price-table').innerHTML=th+tb;
+  document.getElementById('price-table').innerHTML='<thead>'+th+'</thead><tbody>'+tb+'</tbody>';
   document.getElementById('price-page-info').textContent='Page '+PRICE_PAGER.page+' / '+maxPage+' ('+total+' records)';
 }
 
