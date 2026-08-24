@@ -4306,24 +4306,21 @@ function _setupStickyHeader(tabId){
       if(wrap._stickySync) wrap._stickySync();
     });
   }
-  // 关键：等待浏览器完成布局（多帧）后再读真实宽度。
-  // 单次 requestAnimationFrame 不够，因为 innerHTML= 触发的回流在调用栈返回后才完成。
-  // 用 double-rAF 保证 layout 已稳定。
-  // 此外立即同步执行一次（不阻塞），再用双 rAF 保险（处理后续异步图片/字体回流）。
+  // 关键：innerHTML= 触发的回流在调用栈返回后才完成，立即 sync 读到的是 0 宽。
+  // 用 setTimeout(80ms) 保证布局稳定，且 setTimeout 一定执行（rAF 在部分场景会不触发）。
+  // 同步调用一次（即便宽=0 也无害），再用 setTimeout 在布局完成后真正同步 + 显示 fake。
   sync();
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      sync();
-      const thH = thead.getBoundingClientRect().height;
-      if(thH > 0){
-        wrap.style.paddingTop = thH + 'px';
-        fake.style.display = 'block';
-        thead.style.visibility = 'hidden';
-        thead.style.position = 'absolute';
-        thead.style.top = '0';
-      }
-    });
-  });
+  setTimeout(() => {
+    sync();
+    const thH = thead.getBoundingClientRect().height;
+    if(thH > 0){
+      wrap.style.paddingTop = thH + 'px';
+      fake.style.display = 'block';
+      thead.style.visibility = 'hidden';
+      thead.style.position = 'absolute';
+      thead.style.top = '0';
+    }
+  }, 80);
 }
 
 async function loadQuoteTable(){
