@@ -4248,48 +4248,42 @@ function _setupStickyHeader(tabId){
   // 关键: fake 容器宽度 = wrap.clientWidth (可见宽)，内部 cloneTable 宽度 = tab.scrollWidth (实际表格总宽)。
   // wrap overflow:auto 提供横向滚动条。fake 内部 cloneTable 与真实表格列宽一一对应 (width = 真实 td 宽)，
   // 宽度跟真实表完全一致。当 wrap.scrollLeft > 0 时，让 fake transform:translateX(-wrap.scrollLeft) 跟随。
-  cloneTable.style.cssText = 'font-size:11px;border-collapse:separate;border-spacing:0;width:auto;background:transparent;border:0;display:table;table-layout:auto';
+  cloneTable.style.cssText = 'font-size:11px;border-collapse:separate;border-spacing:0;width:100%;background:transparent;border:0;display:table;table-layout:auto';
   const cloneThead = document.createElement('thead');
   cloneThead.innerHTML = thead.innerHTML;
   cloneTable.appendChild(cloneThead);
   fake.innerHTML = '';
   fake.appendChild(cloneTable);
-  // fake th 样式: white-space:nowrap + box-sizing:border-box, fake 容器 overflow:hidden 裁剪
-  cloneTable.querySelectorAll('th').forEach(c => {
-    c.style.cssText = 'padding:4px 7px;font-size:11px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-bottom:0.5px solid var(--border);border-right:0.5px solid var(--border);background:transparent;text-align:left;color:var(--text);box-sizing:border-box';
-  });
+// fake th 样式: 列名不截断 (让最右列也能完整显示)。fake 容器 overflow 留给 CSS。
+    cloneTable.querySelectorAll('th').forEach(c => {
+      c.style.cssText = 'padding:4px 7px;font-size:11px;font-weight:600;white-space:nowrap;border-bottom:0.5px solid var(--border);border-right:0.5px solid var(--border);background:transparent;text-align:left;color:var(--text);box-sizing:border-box;min-width:fit-content';
+    });
   // 同步函数：从 tbody 第一行 <td> 读真实列宽 (非 thead th——)
   // Chromium 表格布局下 thead 与 tbody 的列宽计算可能不一致，
   // 表格整体列宽由 tbody 最长内容决定；thead th 显示宽度是文字宽，
   // 但实际占据的列宽跟 tbody 一致——若取 th 宽会与 td 不对齐)。
-  const sync = () => {
-    const fakeCells = cloneTable.querySelectorAll('th');
-    if(!fakeCells.length) return;
-    // 只读 tbody 真实 td 宽度 (thead th 的宽度由文字决定，与内容列宽不一致，不可用)。
-    const tbody = tab.querySelector('tbody');
-    const realRow = tbody ? tbody.querySelector('tr') : null;
-    if(!realRow){ return; }  // 无数据行则不渲染 fake 表头
-    const realCells = realRow.querySelectorAll('td');
-    fakeCells.forEach((c, i) => {
-      const real = realCells[i];
-      if(!real) return;
-      const r = real.getBoundingClientRect();
-      const w = Math.round(r.width);
-      if(w > 0){
-        // 用 !important 覆盖 cssText 里的默认值
-        c.style.setProperty('width', w + 'px', 'important');
-        c.style.setProperty('min-width', w + 'px', 'important');
-        c.style.setProperty('max-width', w + 'px', 'important');
+  // 不再给 fake th 强制锁宽（之前用 !important 锁 td 宽反而把 fake 总宽限制成 wrap.clientWidth,
+    // 导致右侧列名被裁）。现在 fake th 不设固定宽度，让 cloneTable 由列名内容自然撑开，
+    // fake 容器 width 强制 = tab.scrollWidth。两者一起被 wrap overflow-x:auto 横向裁剪，
+    // 列名完整可见、水平滚动同步。
+    // 同步函数：从 tbody 第一行 <td> 读真实列宽, 但本次只用列数 sanity check, 不强行锁 fake th 宽。
+    const sync = () => {
+      const fakeCells = cloneTable.querySelectorAll('th');
+      if(!fakeCells.length) return;
+      // 只读 tbody 真实 td 宽度作为 sanity check，不写到 fake th 上 (会破坏 fake 自由撑开)。
+      const tbody = tab.querySelector('tbody');
+      const realRow = tbody ? tbody.querySelector('tr') : null;
+      if(!realRow){ return; }  // 无数据行则不渲染 fake 表头
+      const realCells = realRow.querySelectorAll('td');
+      if(realCells.length !== fakeCells.length) { return; }
+      // 关键: fake 容器宽度 = 表格真实总宽(tab.scrollWidth), 不设有限长度 -> 所有列名完整显示。
+      // 用 !important 强制覆盖, 即使内部 cloneTable 的 width 失效 fake 容器也保持正确宽。
+      const tabScrollW = tab.scrollWidth || 0;
+      if(tabScrollW > 0){
+        fake.style.setProperty('width', tabScrollW + 'px', 'important');
+        cloneTable.style.setProperty('width', tabScrollW + 'px', 'important');
       }
-    });
-    // 关键: fake 容器宽度 = 表格真实总宽(tab.scrollWidth)，不设有限长度 → 所有列名完整显示。
-    // 之前设成 wrap.clientWidth 导致右侧列名被裁，这是 bug 根源。
-    const tabScrollW = tab.scrollWidth || totalW;
-    fake.style.width = tabScrollW + 'px';
-    cloneTable.style.width = tabScrollW + 'px';
-    // 横向跟随: fake 和 <table> 同在 wrap 内, 都被 wrap overflow-x:auto 一起裁剪, 无需 JS 平移。
-    // 关键: 这里不设 transform, 否则会破坏 fake 的 position:sticky 垂直吸顶行为。
-  };
+    };
   // fake 和 <table> 同在 wrap 内被 wrap overflow-x:auto 横向一起裁剪，所以无须 scroll 监听做平移。
   // 只保留 resize 触发重新对齐列宽。
   if(wrap._stickySync){
