@@ -4231,14 +4231,16 @@ function _setupStickyHeader(tabId){
   const wrap = tab.parentElement;
   const thead = tab.querySelector('thead');
   if(!thead) return;
-  const parent = wrap.parentElement;
   let fake = document.getElementById(tabId+'-sticky-fake');
   if(!fake){
     fake = document.createElement('div');
     fake.id = tabId+'-sticky-fake';
-    fake.style.cssText = 'position:absolute;top:0;left:0;z-index:6;display:none;pointer-events:none;background:linear-gradient(180deg,#f8f9fa 0%,#f1f3f5 100%);overflow:visible;border-radius:10px 10px 0 0;box-sizing:border-box;will-change:transform';
-    parent.style.position = 'relative';
-    parent.appendChild(fake);
+    // 关键设计: fake 插入到 wrap 最前面、和真实 <table> 同级、宽度=表格 scrollWidth。
+    // 两者都受 wrap (overflow-x:auto) 横向裁剪，横向滚动时自然同步。
+    // fake 用 position:sticky;top:0 垂直吸附在 wrap 顶部——与真实表格列对齐、不会被横向滚截断。
+    // 注意: 不能用 transform/will-change:transform,会破坏 sticky。
+    fake.style.cssText = 'position:sticky;top:0;left:0;z-index:6;display:none;pointer-events:none;background:linear-gradient(180deg,#f8f9fa 0%,#f1f3f5 100%);overflow:visible;border-radius:10px 10px 0 0;box-sizing:border-box';
+    wrap.insertBefore(fake, wrap.firstChild);
   }
   // 克隆 thead (脱离 Chromium 表格布局的特殊 overflow:hidden)
   const cloneTable = document.createElement('table');
@@ -4285,21 +4287,15 @@ function _setupStickyHeader(tabId){
     const tabScrollW = tab.scrollWidth || totalW;
     fake.style.width = tabScrollW + 'px';
     cloneTable.style.width = tabScrollW + 'px';
-    // fake 容器定位: 起点对齐 wrap 在 parent 内的位置 (offsetLeft/offsetTop)
-    fake.style.left = (wrap.offsetLeft || 0) + 'px';
-    fake.style.top = (wrap.offsetTop || 0) + 'px';
-    // 横向跟随: wrap 横向滚动时 fake 表头整体左移，始终跟下方真实表格对齐
-    fake.style.transform = 'translateX(' + (-wrap.scrollLeft) + 'px)';
+    // 横向跟随: fake 和 <table> 同在 wrap 内, 都被 wrap overflow-x:auto 一起裁剪, 无需 JS 平移。
+    // 关键: 这里不设 transform, 否则会破坏 fake 的 position:sticky 垂直吸顶行为。
   };
-  // 每次 loadXxxTable 重建 fake，必须每次都注册新的 sync 闭包到 wrap 上。
+  // fake 和 <table> 同在 wrap 内被 wrap overflow-x:auto 横向一起裁剪，所以无须 scroll 监听做平移。
+  // 只保留 resize 触发重新对齐列宽。
   if(wrap._stickySync){
     wrap._stickySync = sync;
   } else {
     wrap._stickySync = sync;
-    wrap.addEventListener('scroll', () => {
-      const f = document.getElementById(tabId + '-sticky-fake');
-      if(f) f.style.transform = 'translateX(' + (-wrap.scrollLeft) + 'px)';
-    });
     window.addEventListener('resize', () => {
       if(wrap._stickySync) wrap._stickySync();
     });
