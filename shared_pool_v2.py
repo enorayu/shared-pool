@@ -4241,30 +4241,43 @@ function _setupStickyHeader(tabId){
   // 克隆 thead (脱离 Chromium 表格布局的特殊 overflow:hidden)
   const cloneTable = document.createElement('table');
   cloneTable.className = tab.className;
-  cloneTable.style.cssText = 'font-size:12px;border-collapse:separate;border-spacing:0;width:auto;min-width:100%;table-layout:auto;background:transparent;border:0;display:table';
+  // table-layout:fixed 让 fake 列宽严格按 th width 属性定值（无视内容撑开）
+  cloneTable.style.cssText = 'font-size:11px;border-collapse:separate;border-spacing:0;width:100%;table-layout:fixed;background:transparent;border:0;display:table';
   const cloneThead = document.createElement('thead');
   cloneThead.innerHTML = thead.innerHTML;
   cloneTable.appendChild(cloneThead);
   fake.innerHTML = '';
   fake.appendChild(cloneTable);
-  // 同步函数
+  // fake th 样式：去掉 white-space:nowrap（按真实列宽严格裁剪）+ 加 box-sizing:border-box
+  cloneTable.querySelectorAll('th').forEach(c => {
+    c.style.cssText = 'padding:4px 7px;font-size:11px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-bottom:0.5px solid var(--border);border-right:0.5px solid var(--border);background:transparent;text-align:left;color:var(--text);box-sizing:border-box';
+  });
+  // 同步函数：严格按真实 th 宽度设到 fake th（inline width = Xpx, !important 防御样式表）
   const sync = () => {
     const ths = tab.querySelectorAll('thead th');
     const fakeCells = cloneTable.querySelectorAll('th');
-    if(!ths.length) return;
+    if(!ths.length || !fakeCells.length) return;
+    let totalW = 0;
     fakeCells.forEach((c, i) => {
       const real = ths[i];
       if(!real) return;
-      const w = real.getBoundingClientRect().width;
-      if(w > 0) c.style.width = w + 'px';
+      const r = real.getBoundingClientRect();
+      const w = Math.round(r.width);
+      if(w > 0){
+        c.style.setProperty('width', w + 'px', 'important');
+        c.style.setProperty('min-width', w + 'px', 'important');
+        c.style.setProperty('max-width', w + 'px', 'important');
+        totalW += w;
+      }
     });
-    const tabW = tab.getBoundingClientRect().width;
-    fake.style.width = tabW + 'px';
-    cloneTable.style.width = tabW + 'px';
+    fake.style.width = totalW + 'px';
+    cloneTable.style.width = totalW + 'px';
+    // 校准 fake left：真实表格可能因 wrap 内边距/scrollbar 有偏移
+    const tabRect = tab.getBoundingClientRect();
+    const wrapRect = wrap.getBoundingClientRect();
+    const leftOffset = Math.round(tabRect.left - wrapRect.left + wrap.scrollLeft);
+    fake.style.left = leftOffset + 'px';
   };
-  cloneTable.querySelectorAll('th').forEach(c => {
-    c.style.cssText += ';padding:4px 7px;font-size:11px;font-weight:600;white-space:nowrap;border-bottom:0.5px solid var(--border);border-right:0.5px solid var(--border);background:transparent;text-align:left';
-  });
   if(!wrap._stickySync){
     wrap._stickySync = sync;
     wrap.addEventListener('scroll', () => {
@@ -4272,16 +4285,21 @@ function _setupStickyHeader(tabId){
     });
     window.addEventListener('resize', sync);
   }
-  sync();
+  // 关键：等待浏览器完成布局（多帧）后再读真实宽度。
+  // 单次 requestAnimationFrame 不够，因为 innerHTML= 触发的回流在调用栈返回后才完成。
+  // 用 double-rAF 保证 layout 已稳定。
   requestAnimationFrame(() => {
-    const thH = thead.getBoundingClientRect().height;
-    if(thH > 0){
-      wrap.style.paddingTop = thH + 'px';
-      fake.style.display = 'block';
-      thead.style.visibility = 'hidden';
-      thead.style.position = 'absolute';
-      thead.style.top = '0';
-    }
+    requestAnimationFrame(() => {
+      sync();
+      const thH = thead.getBoundingClientRect().height;
+      if(thH > 0){
+        wrap.style.paddingTop = thH + 'px';
+        fake.style.display = 'block';
+        thead.style.visibility = 'hidden';
+        thead.style.position = 'absolute';
+        thead.style.top = '0';
+      }
+    });
   });
 }
 
