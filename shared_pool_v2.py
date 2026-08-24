@@ -1388,6 +1388,91 @@ def quote_add():
 
 
 @app.route("/api/price/list", methods=["GET"])
+def price_list():
+    """List price_pool rows with optional filters and full-text keyword search.
+    NOTE: 2026-08-24 之前此路由误用 quote_pool 数据（与 quote_list 共享函数体），
+    导致前端分页器显示 quote_pool 总数（3579）而非 price_pool 真实数。已拆开。
+    """
+    domain = request.args.get("domain", "")
+    status = request.args.get("status", "")
+    niche = request.args.get("niche", "")
+    supplier = request.args.get("supplier", "")
+    search = request.args.get("search", "").strip()
+    limit = min(int(request.args.get("limit", 100)), 1000)
+    offset = int(request.args.get("offset", 0))
+
+    TABLE = "price_pool"
+    filters = {}
+    if domain:
+        filters["domain"] = domain
+    if status:
+        filters["status"] = status
+    if niche:
+        filters["niche"] = niche
+    if supplier:
+        filters["supplier"] = supplier
+
+    if search:
+        safe_search = search.replace("*", "\\*").replace("%", "\\%").replace("_", "\\_")
+        or_clauses = ",".join([
+            f"domain.ilike.*{safe_search}*",
+            f"supplier.ilike.*{safe_search}*",
+            f"email.ilike.*{safe_search}*",
+            f"contact_email.ilike.*{safe_search}*",
+            f"content.ilike.*{safe_search}*",
+            f"notes.ilike.*{safe_search}*",
+            f"country.ilike.*{safe_search}*",
+            f"niche.ilike.*{safe_search}*",
+            f"site_category.ilike.*{safe_search}*",
+            f"categories.ilike.*{safe_search}*",
+            f"link_rules.ilike.*{safe_search}*",
+        ])
+        qs_parts = [f"select=*", f"limit={limit}", f"offset={offset}",
+                     f"order=discovered_at.desc", f"or=({or_clauses})"]
+        for k, v in filters.items():
+            fp = db._filter_part(k, v)
+            if fp:
+                qs_parts.append(fp)
+        qs = "&".join(qs_parts)
+        resp, data = db._req("GET", f"{TABLE}?{qs}", extra_headers={"Prefer": "count=exact"})
+        total = int((resp.headers.get("Content-Range") or "*/0").split("/")[-1])
+        quotes = data if isinstance(data, list) else []
+        return jsonify({"quotes": quotes or [], "total": total, "offset": offset})
+
+    # Python 侧分页 + discovered_at DESC
+    quotes = _price_fetch_all(filters)
+    total = len(quotes)
+    page_quotes = quotes[offset:offset + limit]
+    return jsonify({"quotes": page_quotes or [], "total": total, "offset": offset})
+
+
+def _price_fetch_all(filters):
+    """全量拉 price_pool（PG 单次 1000 上限，分页拉），按 discovered_at DESC 返回。"""
+    all_rows = []
+    page = 0
+    PAGE = 1000
+    while True:
+        batch = None
+        for _ in range(5):
+            try:
+                batch = db.select(
+                    "price_pool", select="*", limit=PAGE, offset=page * PAGE,
+                    filters=filters, order="discovered_at", ascending=False,
+                )
+                if batch is not None:
+                    break
+            except Exception:
+                import time
+                time.sleep(1.5)
+        if not batch:
+            break
+        all_rows.extend(batch)
+        if len(batch) < PAGE:
+            break
+        page += 1
+    return all_rows
+
+
 @app.route("/api/quote/list", methods=["GET"])
 def quote_list():
     """List quotes with optional filters and full-text keyword search."""
