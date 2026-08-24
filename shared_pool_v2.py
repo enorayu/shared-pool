@@ -4223,7 +4223,8 @@ function onReplyPageSizeChange(){
 
 // 用 fake fixed header (JS-driven) 替代 CSS sticky
 // 原因: <table> 元素默认 overflow:hidden 钳死 sticky <th>，CSS 改不掉
-// 做法: 克隆 thead 到容器顶部的 absolute div，scroll 时同步 translateY；原 thead 直接 display:none 留出顶部 paddingTop 给 fake。
+// 做法: 克隆 thead 到容器顶部的 absolute div，scroll 时同步 translateY(following wrap.scrollTop)
+//       和 translateX(following wrap.scrollLeft)，保持 fake 表头完全跟真实表格对齐。
 function _setupStickyHeader(tabId){
   const tab = document.getElementById(tabId);
   if(!tab) return;
@@ -4241,10 +4242,10 @@ function _setupStickyHeader(tabId){
   // 克隆 thead (脱离 Chromium 表格布局的特殊 overflow:hidden)
   const cloneTable = document.createElement('table');
   cloneTable.className = tab.className;
-  // 关键: 不要 table-layout:fixed。Chromium table-layout:fixed 下若容器宽度 < 各列宽度之和，
-  // 会按比例压缩列宽错位。我们让 fake 容器锁可见宽、内部 table 用自然布局 + 各 th 设真实 td 宽，
-  // 容器 overflow:hidden 裁掉超出 -> fake 内永远只显示一整行，不会出现右侧被截断。
-  cloneTable.style.cssText = 'font-size:11px;border-collapse:separate;border-spacing:0;width:auto;background:transparent;border:0;display:table;table-layout:auto';
+  // 关键: fake 容器宽度 = wrap.clientWidth (可见宽)，内部 cloneTable 宽度 = tab.scrollWidth (实际表格总宽)。
+  // wrap overflow:auto 提供横向滚动条。fake 内部 cloneTable 与真实表格列宽一一对应 (width = 真实 td 宽)，
+  // 宽度跟真实表完全一致。当 wrap.scrollLeft > 0 时，让 fake transform:translateX(-wrap.scrollLeft) 跟随。
+  cloneTable.style.cssText = 'font-size:11px;border-collapse:separate;border-spacing:0;width:100%;background:transparent;border:0;display:table;table-layout:auto';
   const cloneThead = document.createElement('thead');
   cloneThead.innerHTML = thead.innerHTML;
   cloneTable.appendChild(cloneThead);
@@ -4254,10 +4255,10 @@ function _setupStickyHeader(tabId){
   cloneTable.querySelectorAll('th').forEach(c => {
     c.style.cssText = 'padding:4px 7px;font-size:11px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-bottom:0.5px solid var(--border);border-right:0.5px solid var(--border);background:transparent;text-align:left;color:var(--text);box-sizing:border-box';
   });
-  // 同步函数：从 tbody 第一行 <td> 读真实列宽直接写到 fake th (非 thead th——)
+  // 同步函数：从 tbody 第一行 <td> 读真实列宽 (非 thead th——)
   // Chromium 表格布局下 thead 与 tbody 的列宽计算可能不一致，
   // 表格整体列宽由 tbody 最长内容决定；thead th 显示宽度是文字宽，
-  // 但实际占据的列宽跟 tbody 一致——若取 th 宽会与 td 不对齐）。
+  // 但实际占据的列宽跟 tbody 一致——若取 th 宽会与 td 不对齐)。
   const sync = () => {
     const fakeCells = cloneTable.querySelectorAll('th');
     if(!fakeCells.length) return;
@@ -4266,7 +4267,6 @@ function _setupStickyHeader(tabId){
     const realRow = tbody ? tbody.querySelector('tr') : null;
     if(!realRow){ return; }  // 无数据行则不渲染 fake 表头
     const realCells = realRow.querySelectorAll('td');
-    let totalW = 0;
     fakeCells.forEach((c, i) => {
       const real = realCells[i];
       if(!real) return;
@@ -4277,46 +4277,47 @@ function _setupStickyHeader(tabId){
         c.style.setProperty('width', w + 'px', 'important');
         c.style.setProperty('min-width', w + 'px', 'important');
         c.style.setProperty('max-width', w + 'px', 'important');
-        totalW += w;
       }
     });
-    // fake 容器宽度 = 真实表格可见宽 (offsetWidth 含 border, clientWidth 不含) 。
-    // fake 容器 overflow:hidden, 内部 cloneTable 自然布局 (不用 fixed)，
-    // 当各 th 总宽 > fake 容器时, fake 内部出现溢出被裁 -> fake 始终只显示一整行,
-    // 不会出现图 2 "右侧被截一半列名" 的问题。
-    const tabW = tab.offsetWidth || tab.clientWidth || tab.getBoundingClientRect().width;
-    fake.style.width = tabW + 'px';
+    // fake 容器宽度 = wrap.clientWidth (可见宽), 不等于 tab.offsetWidth 因为 tab 可能溢出 wrap。
+    // fake 容器 overflow:hidden 锁可见宽，内部 cloneTable 宽度 = tab.scrollWidth 让 fake 内表格与真表总宽一致。
+    const wrapW = wrap.clientWidth || wrap.getBoundingClientRect().width;
+    const tabScrollW = tab.scrollWidth;
+    fake.style.width = wrapW + 'px';
+    cloneTable.style.width = tabScrollW + 'px';
     // 校准 fake left：真实表格可能因 wrap 内边距/scrollbar 有偏移
     const tabRect = tab.getBoundingClientRect();
     const wrapRect = wrap.getBoundingClientRect();
-    const leftOffset = Math.round(tabRect.left - wrapRect.left + wrap.scrollLeft);
+    const leftOffset = Math.round(tabRect.left - wrapRect.left);
     fake.style.left = leftOffset + 'px';
+    // 同步水平偏移: wrap.scrollLeft > 0 时, 让 fake 内 cloneTable 反向平移贴合真实表
+    fake.style.transform = 'translate(' + (-wrap.scrollLeft) + 'px, ' + wrap.scrollTop + 'px)';
   };
   // 每次 loadXxxTable 重建 fake，必须每次都注册新的 sync 闭包到 wrap 上。
-  // wrap._stickySync 之前设计成单例是错的，会导致后续 load 时新 fake 永远不被同步。
   if(wrap._stickySync){
-    // 已注册 scroll/resize 监听；只更新 sync 引用即可 (监听器读 wrap._stickySync())。
     wrap._stickySync = sync;
   } else {
     wrap._stickySync = sync;
     wrap.addEventListener('scroll', () => {
       const f = document.getElementById(tabId + '-sticky-fake');
-      if(f) f.style.transform = 'translateY(' + wrap.scrollTop + 'px)';
+      if(f) f.style.transform = 'translate(' + (-wrap.scrollLeft) + 'px, ' + wrap.scrollTop + 'px)';
     });
     window.addEventListener('resize', () => {
       if(wrap._stickySync) wrap._stickySync();
     });
   }
-  // 关键：innerHTML= 触发的回流在调用栈返回后才完成，立即 sync 读到的是 0 宽。
+  // 关键: innerHTML= 触发的回流在调用栈返回后才完成，立即 sync 读到的是 0 宽。
   // 用 setTimeout(80ms) 保证布局稳定，且 setTimeout 一定执行（rAF 在部分场景会不触发）。
   sync();
   setTimeout(() => {
     sync();
-    const thH = thead.getBoundingClientRect().height;
+    // 测出 thead 原高 (display:none 还没设上, 此时拿到真实高度)
+    const theadEl = tab.querySelector('thead');
+    const thH = theadEl.getBoundingClientRect().height;
     if(thH > 0){
       // 关键: thead 直接 display:none，从视觉和布局上完全让出顶部位置,
       // 避免双表头叠加 (图 1 问题) ; 用 paddingTop 留位给 fake。
-      thead.style.display = 'none';
+      theadEl.style.display = 'none';
       wrap.style.paddingTop = thH + 'px';
       fake.style.display = 'block';
     }
