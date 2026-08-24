@@ -4264,6 +4264,10 @@ function _setupStickyHeader(tabId){
     const realRow = tbody ? tbody.querySelector('tr') : null;
     const realCells = realRow ? realRow.querySelectorAll('td, th') : tab.querySelectorAll('thead th');
     console.log('[sticky-sync]', tabId, 'tbody?', !!tbody, 'realRow?', !!realRow, 'realCellsCount=', realCells.length, 'firstRowText=', realRow ? realRow.textContent.trim().slice(0,30) : 'NULL');
+    if (realRow) {
+      const widths = Array.from(realCells).slice(0,6).map(c => ({text: c.textContent.trim().slice(0,10), w: Math.round(c.getBoundingClientRect().width)}));
+      console.log('[sticky-sync]', tabId, 'realWidths=', JSON.stringify(widths));
+    }
     let totalW = 0;
     fakeCells.forEach((c, i) => {
       const real = realCells[i];
