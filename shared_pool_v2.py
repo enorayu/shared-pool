@@ -3762,10 +3762,13 @@ tr.selected-row td{background:#e8f4fd}
     </label>
   </div>
   <style>
-    #quote-table{font-size:12px;border-collapse:collapse;width:auto;min-width:100%}
-    #quote-table th,#quote-table td{padding:4px 7px;vertical-align:middle;line-height:1.25}
+    /* sticky <th> 需要 border-collapse: separate + border-spacing: 0 才能真正生效 */
+    #quote-table{font-size:12px;border-collapse:separate;border-spacing:0;width:auto;min-width:100%}
+    #quote-table th,#quote-table td{padding:4px 7px;vertical-align:middle;line-height:1.25;border-bottom:0.5px solid var(--border);border-right:0.5px solid var(--border)}
+    #quote-table th:last-child,#quote-table td:last-child{border-right:none}
+    #quote-table tbody tr:last-child td{border-bottom:none}
     #quote-table tbody tr{min-height:26px}
-    #quote-table th{white-space:nowrap;font-size:11px;font-weight:600}
+    #quote-table thead th{position:sticky;top:0;z-index:3;background:linear-gradient(180deg,#f8f9fa 0%,#f1f3f5 100%);box-shadow:inset 0 -1.5px 0 #d0d7de;font-size:11px;font-weight:600;white-space:nowrap}
     #quote-table th.col-link{width:160px}
     #quote-table th.col-keywords{width:120px}
     #quote-table th.col-linkrules{width:140px}
@@ -3815,9 +3818,12 @@ tr.selected-row td{background:#e8f4fd}
   </div>
   <div style="overflow-x:auto;max-height:calc(100vh - 320px);overflow-y:auto">
   <style>
-    #price-table{font-size:12px;border-collapse:collapse;width:auto;min-width:100%}
-    #price-table th,#price-table td{padding:4px 7px;vertical-align:middle;line-height:1.25}
-    #price-table th{white-space:nowrap;font-size:11px;font-weight:600}
+    /* sticky <th> 需要 border-collapse: separate + border-spacing: 0 才能真正生效 */
+    #price-table{font-size:12px;border-collapse:separate;border-spacing:0;width:auto;min-width:100%}
+    #price-table th,#price-table td{padding:4px 7px;vertical-align:middle;line-height:1.25;border-bottom:0.5px solid var(--border);border-right:0.5px solid var(--border)}
+    #price-table th:last-child,#price-table td:last-child{border-right:none}
+    #price-table tbody tr:last-child td{border-bottom:none}
+    #price-table thead th{position:sticky;top:0;z-index:3;background:linear-gradient(180deg,#f8f9fa 0%,#f1f3f5 100%);box-shadow:inset 0 -1.5px 0 #d0d7de;font-size:11px;font-weight:600;white-space:nowrap}
   </style>
   <table id="price-table">
     <thead><tr><th>#</th><th>Link</th><th>Price</th><th>Backlink Type</th><th>DR</th><th>DA</th><th>MeUp价格</th><th>Bazoom价格</th><th>Ref. Domains</th><th>Traffic</th><th>Country</th><th>Categories</th><th>Languages</th><th>TAT</th><th>Permanence</th><th>Contact</th><th>Cooperation</th><th>Payment</th><th>Link Rules</th><th>Status</th></tr></thead>
