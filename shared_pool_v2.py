@@ -1705,7 +1705,7 @@ def quote_export():
         ("price",         "Price",         lambda idx, q, _pc, _lc: _pc),
         ("meup_price",    "Meup Price",    lambda idx, q, _pc, _lc: safe_str(q.get("meup_price"))),
         ("bazoom_price",  "Bazoom Price",  lambda idx, q, _pc, _lc: safe_str(q.get("bazoom_price"))),
-        ("backlink_type", "Backlink Type", lambda idx, q, _pc, _lc: safe_str(q.get("price_type") or q.get("site_category") or q.get("niche"))),
+        ("backlink_type", "Backlink Type", lambda idx, q, _pc, _lc: safe_str(q.get("cooperation_type") or q.get("price_type") or q.get("site_category") or q.get("niche"))),
         ("dr",            "DR",            lambda idx, q, _pc, _lc: safe_str(q.get("dr") or q.get("traffic"))),
         ("da",            "DA",            lambda idx, q, _pc, _lc: safe_str(q.get("da"))),
         ("ref_domains",   "Ref. Domains",  lambda idx, q, _pc, _lc: safe_str(q.get("ref_domains"))),
@@ -1716,7 +1716,6 @@ def quote_export():
         ("tat",           "TAT",           lambda idx, q, _pc, _lc: safe_str(q.get("tat")) or ""),
         ("permanence",    "Permanence",    lambda idx, q, _pc, _lc: safe_str(q.get("permanence"))),
         ("contact",       "Contact",       lambda idx, q, _pc, _lc: safe_str(q.get("contact_email") or q.get("email"))),
-        ("cooperation",   "Cooperation",   lambda idx, q, _pc, _lc: safe_str(q.get("cooperation_type"))),
         ("payment",       "Payment",       lambda idx, q, _pc, _lc: safe_str(q.get("payment"))),
         ("link_rules",    "Link Rules",    lambda idx, q, _pc, _lc: safe_str(q.get("link_rules"))),
         ("status",        "Status",        lambda idx, q, _pc, _lc: safe_str(q.get("status"))),
@@ -3961,7 +3960,7 @@ tr.selected-row td{background:#e8f4fd}
       <th class="q-col-extra">Ref. Domains</th><th class="q-col-extra">Traffic</th><th>Country</th>
       <th class="q-col-extra">Categories</th><th class="q-col-extra">Languages</th>
       <th class="q-col-extra">TAT</th><th>Permanence</th><th class="col-contact">Contact</th>
-      <th class="q-col-extra">Cooperation</th><th class="q-col-extra">Payment</th>
+      <th class="q-col-extra">Payment</th>
       <th class="col-linkrules">Link Rules</th><th>Status</th>
     </tr></thead><tbody></tbody>
   </table>
@@ -4003,7 +4002,7 @@ tr.selected-row td{background:#e8f4fd}
     #price-table thead th{background:linear-gradient(180deg,#f8f9fa 0%,#f1f3f5 100%);font-size:11px;font-weight:600;white-space:nowrap;border-right:0.5px solid var(--border);border-bottom:0.5px solid var(--border);padding:6px 8px}
   </style>
   <table id="price-table">
-    <thead><tr><th>#</th><th>Link</th><th>Price</th><th>Backlink Type</th><th>DR</th><th>DA</th><th>MeUp价格</th><th>Bazoom价格</th><th>Ref. Domains</th><th>Traffic</th><th>Country</th><th>Categories</th><th>Languages</th><th>TAT</th><th>Permanence</th><th>Contact</th><th>Cooperation</th><th>Payment</th><th>Link Rules</th><th>Status</th></tr></thead>
+    <thead><tr><th>#</th><th>Link</th><th>Price</th><th>Backlink Type</th><th>DR</th><th>DA</th><th>MeUp价格</th><th>Bazoom价格</th><th>Ref. Domains</th><th>Traffic</th><th>Country</th><th>Categories</th><th>Languages</th><th>TAT</th><th>Permanence</th><th>Contact</th><th>Payment</th><th>Link Rules</th><th>Status</th></tr></thead>
     <tbody></tbody>
   </table>
   </div>
@@ -4429,7 +4428,7 @@ async function loadQuoteTable(){
     '<th class="q-col-extra">Ref. Domains</th><th class="q-col-extra">Traffic</th><th>Country</th>'+
     '<th class="q-col-extra">Categories</th><th class="q-col-extra">Languages</th>'+
     '<th class="q-col-extra">TAT</th><th>Permanence</th><th class="col-contact">Contact</th>'+
-    '<th class="q-col-extra">Cooperation</th><th class="q-col-extra">Payment</th>'+
+    '<th class="q-col-extra">Payment</th>'+
     '<th class="col-linkrules">Link Rules</th><th>Status</th></tr>';
 
   const mappedFields=new Set(['domain','price','cooperation_type','traffic','country','site_category','niche','tat','permanence','contact_email','email','supplier','da','dr','ref_domains','categories','languages','link_rules','content','payment','discount','additional_services','requirements','reply_content','status','notes','discovered_by','discovered_at','quote_id','reply_id','priority','id']);
@@ -4474,7 +4473,7 @@ async function loadQuoteTable(){
         <td style="color:var(--muted);font-size:10.5px;text-align:center">${_getGlobalIdx(QUOTE_PAGER.page,limit,i)}</td>
         <td><a href="http://${esc(q.domain)}" target="_blank">${esc(q.domain)}</a></td>
         <td style="white-space:nowrap">${esc((function(){var n=parseFloat(q.normalized_price);if(!isNaN(n)){var d=n%1===0?String(n):String(n);return d+' '+(q.normalized_currency||'USD')}return q.price||''})())}</td>
-        <td>${esc(q.price_type || q.site_category || q.niche || '')}</td>
+        <td>${esc(q.cooperation_type || q.price_type || q.site_category || q.niche || '')}</td>
         <td class="q-col-extra">${esc(q.dr||'')}</td>
         <td class="q-col-extra">${esc(q.da||'')}</td>
         <td class="q-col-extra">${q.meup_price!=null?esc(q.meup_price):'<span style="color:#bbb">—</span>'}</td>
@@ -4487,7 +4486,6 @@ async function loadQuoteTable(){
         <td class="q-col-extra">${esc(q.tat||'')}</td>
         <td>${esc(q.permanence||'')}</td>
         <td title="${esc(rawContact)}">${esc(displayContact)}</td>
-        <td class="q-col-extra">${esc(q.cooperation_type||'')}</td>
         <td class="q-col-extra">${esc(q.payment||'')}</td>
         <td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(q.link_rules||'',300)}">${esc(q.link_rules||'')}</td>
         <td><span class="status-${(q.status||'New')}">${esc(q.status||'New')}</span></td>
@@ -4959,7 +4957,7 @@ async function loadPriceTable(){
   const th='<tr><th>#</th><th>Link</th><th>Price</th><th>Backlink Type</th><th>DR</th><th>DA</th>'+
     '<th>MeUp价格</th><th>Bazoom价格</th><th>Ref. Domains</th><th>Traffic</th><th>Country</th>'+
     '<th>Categories</th><th>Languages</th><th>TAT</th><th>Permanence</th><th>Contact</th>'+
-    '<th>Cooperation</th><th>Payment</th><th>Link Rules</th><th>Status</th></tr>';
+    '<th>Payment</th><th>Link Rules</th><th>Status</th></tr>';
   const tb=rows.map((q,i)=>{
     const priceDisp=(function(){var n=parseFloat(q.normalized_price);if(!isNaN(n)){var d=n%1===0?String(n):String(n);return d+' '+(q.normalized_currency||'USD')}return q.price||''})();
     const contact=esc2(q.contact_email||q.email||'');
@@ -4967,7 +4965,7 @@ async function loadPriceTable(){
       '<td style="color:var(--muted);font-size:10.5px;text-align:center">'+(i+1+(PRICE_PAGER.page-1)*limit)+'</td>'+
       '<td><a href="http://'+esc2(q.domain)+'" target="_blank">'+esc2(q.domain)+'</a></td>'+
       '<td style="white-space:nowrap">'+esc2(priceDisp)+'</td>'+
-      '<td>'+esc2(q.price_type||q.site_category||q.niche||'')+'</td>'+
+      '<td>'+esc2(q.cooperation_type||q.price_type||q.site_category||q.niche||'')+'</td>'+
       '<td>'+esc2(q.dr||'')+'</td>'+
       '<td>'+esc2(q.da||'')+'</td>'+
       '<td>'+(q.meup_price!=null?esc2(q.meup_price):'<span style="color:#bbb">—</span>')+'</td>'+
@@ -4980,7 +4978,6 @@ async function loadPriceTable(){
       '<td>'+esc2(q.tat||'')+'</td>'+
       '<td>'+esc2(q.permanence||'')+'</td>'+
       '<td title="'+esc2(q.contact_email||q.email||'')+'">'+contact+'</td>'+
-      '<td>'+esc2(q.cooperation_type||'')+'</td>'+
       '<td>'+esc2(q.payment||'')+'</td>'+
       '<td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+esc2(q.link_rules||'')+'">'+esc2(q.link_rules||'')+'</td>'+
       '<td><span class="status-'+(q.status||'New')+'">'+esc2(q.status||'New')+'</span></td>'+
@@ -5018,7 +5015,7 @@ const PRICE_EXPORT_COLS=[
   {key:'country',label:'Country',default:true},{key:'categories',label:'Categories',default:false},
   {key:'languages',label:'Languages',default:true},{key:'tat',label:'TAT',default:true},
   {key:'permanence',label:'Permanence',default:true},{key:'contact',label:'Contact',default:true},
-  {key:'cooperation',label:'Cooperation',default:false},{key:'payment',label:'Payment',default:false},
+  {key:'payment',label:'Payment',default:false},
   {key:'link_rules',label:'Link Rules',default:true},{key:'status',label:'Status',default:true},
   {key:'data_status',label:'Data Status',default:true},
 ];
@@ -5049,7 +5046,6 @@ const QUOTE_EXPORT_COLS = [
   {key:'tat',          label:'TAT',          default:true},
   {key:'permanence',   label:'Permanence',   default:true},
   {key:'contact',      label:'Contact',      default:true},
-  {key:'cooperation',  label:'Cooperation',  default:false},
   {key:'payment',      label:'Payment',      default:false},
   {key:'link_rules',   label:'Link Rules',   default:true},
   {key:'status',       label:'Status',       default:true},
@@ -5067,8 +5063,8 @@ function confirmQuoteExport(){
       {key:'bazoom_price',idx:5},{key:'backlink_type',idx:6},{key:'dr',idx:7},{key:'da',idx:8},
       {key:'ref_domains',idx:9},{key:'traffic',idx:10},{key:'country',idx:11},{key:'categories',idx:12},
       {key:'languages',idx:13},{key:'tat',idx:14},{key:'permanence',idx:15},{key:'contact',idx:16},
-      {key:'cooperation',idx:17},{key:'payment',idx:18},{key:'link_rules',idx:19},{key:'status',idx:20},
-      {key:'data_status',idx:21},
+      {key:'payment',idx:17},{key:'link_rules',idx:18},{key:'status',idx:19},
+      {key:'data_status',idx:20},
     ];
     const picked = thDefs.filter(d => cols.includes(d.key));
     const headers = picked.map(d => QUOTE_EXPORT_COLS.find(c=>c.key===d.key).label);
