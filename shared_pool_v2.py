@@ -3946,7 +3946,11 @@ tr.selected-row td{background:#e8f4fd}
     #quote-table th:last-child,#quote-table td:last-child{border-right:none}
     #quote-table tbody tr:last-child td{border-bottom:none}
     #quote-table tbody tr{min-height:26px}
-    #quote-table thead th{position:sticky;top:0;z-index:5;background:linear-gradient(180deg,#e7eaf0 0%,#d8dde6 100%);box-shadow:0 2px 4px rgba(0,0,0,.08),inset 0 -2px 0 #5a6473;font-size:11.5px;font-weight:700;color:#1f2733;white-space:nowrap;letter-spacing:.2px}
+    /* Sticky header: 关键修复 — 必须在 thead *和* th 都设 sticky 才对.
+       之前只在 th 上设 sticky, Chrome 实际不生效 (Playwright 验证 scrollTop=150 后 th.top=290
+       远在 wrap.top=368 之上, sticky 没粘贴). 同时设 thead sticky + th sticky 能跨浏览器都 work. */
+    #quote-table thead{position:sticky;top:0;z-index:4;background:linear-gradient(180deg,#e7eaf0 0%,#d8dde6 100%);box-shadow:0 2px 4px rgba(0,0,0,.08),inset 0 -2px 0 #5a6473}
+    #quote-table thead th{position:sticky;top:0;z-index:5;background:linear-gradient(180deg,#e7eaf0 0%,#d8dde6 100%);box-shadow:inset 0 -2px 0 #5a6473;font-size:11.5px;font-weight:700;color:#1f2733;white-space:nowrap;letter-spacing:.2px}
     #quote-table th.col-link{width:160px}
     #quote-table th.col-keywords{width:120px}
     #quote-table th.col-linkrules{width:140px}
@@ -4002,6 +4006,8 @@ tr.selected-row td{background:#e8f4fd}
     #price-table th,#price-table td{padding:4px 7px;vertical-align:middle;line-height:1.25;border-bottom:0.5px solid var(--border);border-right:0.5px solid var(--border)}
     #price-table th:last-child,#price-table td:last-child{border-right:none}
     #price-table tbody tr:last-child td{border-bottom:none}
+    /* 同 quote-table: thead + th 双层 sticky, 保险有效 */
+    #price-table thead{position:sticky;top:0;z-index:2;background:linear-gradient(180deg,#f8f9fa 0%,#f1f3f5 100%)}
     #price-table thead th{position:sticky;top:0;z-index:3;background:linear-gradient(180deg,#f8f9fa 0%,#f1f3f5 100%);box-shadow:inset 0 -1.5px 0 #d0d7de;font-size:11px;font-weight:600;white-space:nowrap}
   </style>
   <table id="price-table">
