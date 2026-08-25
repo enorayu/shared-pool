@@ -3927,9 +3927,11 @@ tr.selected-row td{background:#e8f4fd}
     <button class="btn" style="font-size:11px" onclick="downloadQuoteTemplate()">Download Template</button>
     <span id="quote-import-file-result" style="font-size:12px;color:var(--muted)"></span>
   </div>
-  <!-- 关键: max-width:100% + width:100% 钉死外层不撑出 body，body 永远不会出横向滚动条；
-       横向溢出只在外层 div 内部以滚动条呈现。 -->
-  <div style="overflow-x:auto;overflow-y:auto;width:100%;max-width:100%;min-width:0;max-height:calc(100vh - 360px)">
+  // Quote Pool 滚动容器 (CSS sticky 由浏览器原生处理, 不需要任何 JS)
+// 只要保证: (1) 容器有 overflow + max-height 让其内部出滚动条;
+//          (2) <thead> 不被 JS 隐藏 (display:none 会让 sticky 失效)。
+// 给容器加个稳定 id, 方便调试。
+  <div id="quote-table-scroll" style="overflow-x:auto;overflow-y:auto;width:100%;max-width:100%;min-width:0;max-height:calc(100vh - 360px)">
   <div style="margin-bottom:4px;text-align:right">
     <label style="font-size:11.5px;color:var(--muted);cursor:pointer" onclick="toggleQuoteCols()">
       <input type="checkbox" id="q-show-all-cols"> Hide low-freq columns (DR/DA/Traffic/TAT/etc.)
@@ -3992,7 +3994,8 @@ tr.selected-row td{background:#e8f4fd}
     <button class="btn" style="font-size:11px;padding:4px 10px" onclick="PRICE_PAGER.page=1;loadPriceTable()">Search</button>
     <button class="btn green" onclick="openPriceExportPanel()">Export</button>
   </div>
-  <div style="overflow-x:auto;overflow-y:auto;width:100%;max-width:100%;min-width:0;max-height:calc(100vh - 360px)">
+  <!-- Price Pool 滚动容器: CSS sticky 接管吸顶 (line 4004) -->
+  <div id="price-table-scroll" style="overflow-x:auto;overflow-y:auto;width:100%;max-width:100%;min-width:0;max-height:calc(100vh - 360px)">
   <style>
     /* sticky <th> 需要 border-collapse: separate + border-spacing: 0 才能真正生效 */
     #price-table{font-size:12px;border-collapse:separate;border-spacing:0;width:auto;min-width:max-content;table-layout:auto}
@@ -4397,87 +4400,14 @@ function onReplyPageSizeChange(){
   loadReplyTable();
 }
 
-// 真正的 fake 吸顶表头 (JS-driven)。
-// 之前用 native thead sticky: <table> 元素默认 overflow:hidden, sticky <th> 在某些浏览器里被钳死;
-// 且 `_setupStickyHeader` 又给 <th> 设 inline cssText 覆盖 <style> 块, 改 <style> 不生效, sticky 实际无效。
-// 现在改: 克隆真实 thead 到 absolute div, 列宽直接从真实 th.offsetWidth 复制, 完美对齐;
-//       监听 wrap.scroll, fake.transform = translate(-scrollLeft, -scrollTop), 永远贴 wrap 顶部。
-//       同时隐藏真实 thead (display:none) 不占空间, fake 完全替代。
-function _setupStickyHeader(tabId){
-  const tab = document.getElementById(tabId);
-  if(!tab) return;
-  const wrap = tab.parentElement;
-  const thead = tab.querySelector('thead');
-  if(!thead || !thead.querySelector('tr')) return;
-  // 清理旧 fake
-  const oldFake = document.getElementById(tabId+'-sticky-fake');
-  if(oldFake){ oldFake.remove(); }
-  // wrap 必须 position:relative 才能让 absolute 子元素锚定到 wrap 内
-  if(getComputedStyle(wrap).position === 'static'){
-    wrap.style.position = 'relative';
-  }
-  // 表格宽度策略: table 撑到内容真实宽度, wrap 出横滚条
-  tab.style.minWidth = 'max-content';
-  // 1) 隐藏真实 thead (避免占空间 + 避免 native sticky 干扰)
-  thead.style.display = 'none';
-  // 2) 克隆 thead 内部 (深克隆 tr+th, 但不带原始 style)
-  const fake = document.createElement('div');
-  fake.id = tabId + '-sticky-fake';
-  fake.style.cssText = 'position:absolute;top:0;left:0;right:0;z-index:10;pointer-events:auto;background:var(--card);overflow:hidden;will-change:transform';
-  // 内层用一个 table 镜像真实 thead 的 column model
-  const fakeTable = document.createElement('table');
-  fakeTable.style.cssText = 'border-collapse:separate;border-spacing:0;table-layout:auto;width:max-content';
-  // 拷贝 thead 的 innerHTML (tr + th), 移除原 th 的 inline style
-  const realThs = thead.querySelectorAll('th');
-  const clonedTr = document.createElement('tr');
-  realThs.forEach((srcTh) => {
-    const newTh = document.createElement('th');
-    // 拷所有属性 (class 等)
-    for (const attr of srcTh.attributes) {
-      if (attr.name === 'style') continue;
-      newTh.setAttribute(attr.name, attr.value);
-    }
-    // 拷内容 (含 checkbox / 子节点)
-    newTh.innerHTML = srcTh.innerHTML;
-    newTh.style.cssText = 'background:linear-gradient(180deg,#e7eaf0 0%,#d8dde6 100%);box-shadow:inset 0 -2px 0 #5a6473;padding:8px 7px;font-size:11.5px;font-weight:700;color:#1f2733;letter-spacing:.2px;border-right:0.5px solid var(--border);border-bottom:0.5px solid var(--border);text-align:left;box-sizing:border-box;white-space:normal;word-break:normal;overflow-wrap:break-word;line-height:1.3;vertical-align:bottom;background-clip:padding-box';
-    clonedTr.appendChild(newTh);
-  });
-  // 表头行包成 thead 放进 fakeTable
-  const fakeThead = document.createElement('thead');
-  fakeThead.appendChild(clonedTr);
-  fakeTable.appendChild(fakeThead);
-  fake.appendChild(fakeTable);
-  // 3) 插入到 wrap 内 (绝对定位 top:0)
-  wrap.appendChild(fake);
-  // 4) 同步列宽: 把真实 th 的 offsetWidth 复制到 fake th
-  function syncWidths(){
-    const realThsNow = thead.querySelectorAll('th');
-    const fakeThsNow = fake.querySelectorAll('th');
-    const tableW = tab.offsetWidth;
-    // fake table 宽度 = 真实表格宽度 (确保列宽对齐)
-    fakeTable.style.width = tableW + 'px';
-    realThsNow.forEach((srcTh, i) => {
-      const fTh = fakeThsNow[i];
-      if (!fTh) return;
-      const w = srcTh.offsetWidth;
-      if (w) fTh.style.width = w + 'px';
-    });
-  }
-  // 5) 跟随 wrap.scroll
-  function syncScroll(){
-    fake.style.transform = 'translate(' + (-wrap.scrollLeft) + 'px, ' + (-wrap.scrollTop) + 'px)';
-  }
-  syncWidths();
-  syncScroll();
-  // 6) 事件绑定 (用 addEventListener 防重复)
-  wrap.removeEventListener('scroll', syncScroll);
-  wrap.addEventListener('scroll', syncScroll, { passive: true });
-  // 7) resize + 列数变化重同步: 用 ResizeObserver 监 wrap/tab
-  if (window._stickyRO) window._stickyRO.disconnect();
-  window._stickyRO = new ResizeObserver(() => { syncWidths(); syncScroll(); });
-  window._stickyRO.observe(tab);
-  window._stickyRO.observe(wrap);
-}
+// Quote Pool 列头吸顶方案说明 (之前两版都失败了):
+// - v1 (CSS sticky <th>): 被 _setupStickyHeader 的 inline cssText 覆盖, 在浏览器里有的版本失效。
+// - v2 (fake JS-driven sticky): fake div 找不到滚动容器, 直接挂在 body 之外的 div,
+//   形成"标题栏浮在第一行 / 数据穿插"的视觉污染。
+// - 当前 v3: 改回纯 CSS sticky. line 3947 那个 <style>#quote-table thead th {position:sticky;top:0}
+//   现在能正常生效——前提是 _setupStickyHeader 不再存在, 不再有人调 thead.style.display='none'。
+// 价格表 price-table 同理 (#price-table thead th {position:sticky;top:0} 在 line 4018 附近)。
+// 如果日后真的需要重新实现, 在改之前先 Playwright 验, 不再盲推。
 
 async function loadQuoteTable(){
   const limit=QUOTE_PAGER.pageSize;
@@ -4576,7 +4506,7 @@ async function loadQuoteTable(){
     }).join('');
 
   document.getElementById('quote-table').innerHTML='<thead>'+th+'</thead><tbody>'+tb+'</tbody>';
-  _setupStickyHeader('quote-table');
+  // 表头吸顶: 由浏览器原生 CSS sticky (line 3947) 接管, JS 不再做任何事。
   _updateSelCount(QUOTE_SEL,'quote-sel-count','quote-delete-btn');
   document.getElementById('quote-delete-btn').style.display=QUOTE_SEL.size?'inline-block':'none';
   document.getElementById('quote-page-info').textContent='Page '+QUOTE_PAGER.page+' / '+maxPage+' ('+total.toLocaleString()+' records)';
@@ -5068,7 +4998,7 @@ async function loadPriceTable(){
     '</tr>';
   }).join('');
   document.getElementById('price-table').innerHTML='<thead>'+th+'</thead><tbody>'+tb+'</tbody>';
-  _setupStickyHeader('price-table');
+  // 表头吸顶: 浏览器原生 CSS sticky 接管。
   document.getElementById('price-page-info').textContent='Page '+PRICE_PAGER.page+' / '+maxPage+' ('+total+' records)';
 }
 
