@@ -1967,6 +1967,64 @@ def _to_numeric(val):
         return None
 
 
+# ════════════════════════════════════════════════════════════
+# country / languages 简写 -> 全称 (与前端 COUNTRY_FULL/LANG_FULL 一致)
+# 导入逻辑里直接规范化, 避免库里再堆积简写 (IN/GB/en/de...)
+# ════════════════════════════════════════════════════════════
+_COUNTRY_FULL = {
+    'IN': 'India', 'US': 'United States', 'GB': 'United Kingdom', 'UK': 'United Kingdom',
+    'CN': 'China', 'DE': 'Germany', 'FR': 'France', 'IT': 'Italy', 'ES': 'Spain',
+    'PT': 'Portugal', 'BR': 'Brazil', 'CA': 'Canada', 'AU': 'Australia', 'NZ': 'New Zealand',
+    'JP': 'Japan', 'KR': 'South Korea', 'RU': 'Russia', 'MX': 'Mexico', 'AR': 'Argentina',
+    'CL': 'Chile', 'CO': 'Colombia', 'PE': 'Peru', 'NL': 'Netherlands', 'BE': 'Belgium',
+    'SE': 'Sweden', 'NO': 'Norway', 'FI': 'Finland', 'DK': 'Denmark', 'PL': 'Poland',
+    'TR': 'Turkey', 'GR': 'Greece', 'EG': 'Egypt', 'ZA': 'South Africa', 'NG': 'Nigeria',
+    'KE': 'Kenya', 'MA': 'Morocco', 'DZ': 'Algeria', 'TN': 'Tunisia', 'BF': 'Burkina Faso',
+    'ML': 'Mali', 'CM': 'Cameroon', 'TD': 'Chad', 'PK': 'Pakistan', 'BD': 'Bangladesh',
+    'LK': 'Sri Lanka', 'NP': 'Nepal', 'TH': 'Thailand', 'VN': 'Vietnam', 'ID': 'Indonesia',
+    'MY': 'Malaysia', 'SG': 'Singapore', 'PH': 'Philippines', 'HK': 'Hong Kong', 'TW': 'Taiwan',
+    'AE': 'United Arab Emirates', 'SA': 'Saudi Arabia', 'IL': 'Israel', 'CH': 'Switzerland',
+    'AT': 'Austria', 'IE': 'Ireland', 'CZ': 'Czechia', 'HU': 'Hungary', 'RO': 'Romania',
+    'UA': 'Ukraine', 'HN': 'Honduras', 'BO': 'Bolivia', 'VE': 'Venezuela', 'EC': 'Ecuador',
+    'UY': 'Uruguay', 'PY': 'Paraguay', 'CR': 'Costa Rica', 'PA': 'Panama', 'DO': 'Dominican Republic',
+    'CU': 'Cuba', 'JM': 'Jamaica', 'TT': 'Trinidad and Tobago', 'GT': 'Guatemala',
+    'SV': 'El Salvador', 'NI': 'Nicaragua',
+}
+_LANG_FULL = {
+    'en': 'English', 'fr': 'French', 'es': 'Spanish', 'de': 'German', 'it': 'Italian',
+    'pt': 'Portuguese', 'nl': 'Dutch', 'ru': 'Russian', 'pl': 'Polish', 'tr': 'Turkish',
+    'ar': 'Arabic', 'zh': 'Chinese', 'ja': 'Japanese', 'ko': 'Korean', 'hi': 'Hindi',
+    'bn': 'Bengali', 'ur': 'Urdu', 'fa': 'Persian', 'he': 'Hebrew', 'th': 'Thai',
+    'vi': 'Vietnamese', 'id': 'Indonesian', 'ms': 'Malay', 'sv': 'Swedish', 'da': 'Danish',
+    'fi': 'Finnish', 'cs': 'Czech', 'hu': 'Hungarian', 'ro': 'Romanian', 'el': 'Greek',
+    'uk': 'Ukrainian', 'sw': 'Swahili',
+}
+
+def _full_country_code(v):
+    if not v:
+        return v
+    v = str(v).strip()
+    if not v:
+        return v
+    if v.upper() in _COUNTRY_FULL:
+        return _COUNTRY_FULL[v.upper()]
+    return v  # 已含空格(=全称)或不在映射表, 原样保留
+
+def _full_lang_code(v):
+    if not v:
+        return v
+    v = str(v).strip()
+    if not v:
+        return v
+    if v.lower() in _LANG_FULL:
+        return _LANG_FULL[v.lower()]
+    if '/' in v:
+        ps = [s.strip() for s in v.split('/')]
+        ps[0] = _LANG_FULL.get(ps[0].lower(), ps[0])
+        return ' / '.join(ps)
+    return v
+
+
 def _normalize_price_fields(price_str: str):
     """
     从 price 原始文本(如 "$35/post / $20/post" 或 "£120/post / £90/link")
@@ -2745,7 +2803,9 @@ def quote_import():
             "dr": (row.get(col_map.get('dr', ''), '') or '')[:50],
             "site_category": (row.get(col_map.get('site_category', ''), '') or '')[:50],
             "categories": (row.get(col_map.get('site_category', ''), '') or '')[:200],
-            "languages": (row.get(col_map.get('languages', ''), '') or '')[:100],
+            # ⚠️ country/languages 简写 -> 全称 (治本: 导入即规范化, 避免库里再堆积简写)
+            "country": _full_country_code((row.get(col_map.get('country', ''), '') or '')[:50]),
+            "languages": _full_lang_code((row.get(col_map.get('languages', ''), '') or '')[:100]),
             "cooperation_type": (row.get(col_map.get('cooperation_type', ''), '') or '')[:50],
             "price": raw_price,
             "normalized_price": norm["normalized_price"],
@@ -4337,73 +4397,86 @@ function onReplyPageSizeChange(){
   loadReplyTable();
 }
 
-// 用 fake fixed header (JS-driven) 替代 CSS sticky
-// 原因: <table> 元素默认 overflow:hidden 钳死 sticky <th>，CSS 改不掉
-// 做法: 克隆 thead 到容器顶部的 absolute div，scroll 时同步 translateY(following wrap.scrollTop)
-//       和 translateX(following wrap.scrollLeft)，保持 fake 表头完全跟真实表格对齐。
+// 真正的 fake 吸顶表头 (JS-driven)。
+// 之前用 native thead sticky: <table> 元素默认 overflow:hidden, sticky <th> 在某些浏览器里被钳死;
+// 且 `_setupStickyHeader` 又给 <th> 设 inline cssText 覆盖 <style> 块, 改 <style> 不生效, sticky 实际无效。
+// 现在改: 克隆真实 thead 到 absolute div, 列宽直接从真实 th.offsetWidth 复制, 完美对齐;
+//       监听 wrap.scroll, fake.transform = translate(-scrollLeft, -scrollTop), 永远贴 wrap 顶部。
+//       同时隐藏真实 thead (display:none) 不占空间, fake 完全替代。
 function _setupStickyHeader(tabId){
   const tab = document.getElementById(tabId);
   if(!tab) return;
   const wrap = tab.parentElement;
   const thead = tab.querySelector('thead');
-  if(!thead) return;
-  // 清理遗留 fake (修复历史版本): 之前用 clone div 模拟吸顶, fake 列宽与真实 td 经常错位 (108px),
-  // fake 内长标题(Backlink Type/MeUp价格/Ref. Domains)还会溢出挤压相邻列。改用 native thead sticky,
-  // 真实 <thead><tr><th> 与 <tbody><tr><td> 共用同一 column 模型, 列宽天然 100% 对齐, 无错位。
+  if(!thead || !thead.querySelector('tr')) return;
+  // 清理旧 fake
   const oldFake = document.getElementById(tabId+'-sticky-fake');
-  if(oldFake){
-    oldFake.remove();
-    // 历史 fake d2a5f4f 把 thead 设了 display:none, 需还原, 否则 thead 不渲染。
-    thead.style.display = '';
+  if(oldFake){ oldFake.remove(); }
+  // wrap 必须 position:relative 才能让 absolute 子元素锚定到 wrap 内
+  if(getComputedStyle(wrap).position === 'static'){
+    wrap.style.position = 'relative';
   }
-  // ⚠️ 整表宽度策略: td 中很多列是数字(DR/DA)或短文本(数字/country code/TAT), 没自然宽,
-  //    而 th 标题是英文短词/中文词组(如 Categories/Cooperation/Ref. Domains/Link Rules/Permanence/Contact)本来就窄列放不下。
-  //    - 用 `table-layout: auto` (浏览器默认) 下, 浏览器会按 "th 内容需要的最小宽" 算列宽, 严禁再用 overflow-wrap:anywhere 否则会把英文单词按字符断行成竖排 ("Categories" 拆成 "C/a/t/e/g/o/r/i/e/s")。
-  //    - 这里把 min-width 设在 table 自身 (不是外层 wrap), 让 table 撑开到它真正需要的总宽,
-  //      外层 wrap 保持 width:100% + overflow-x:auto, 超出部分只出横向滚动条, body 不被撑大。
-  //    - 再针对已知易被压窄的列(Languages/Permanence/Cooperation/Categories/Link Rules/Backlink Type/Ref. Domains/MeUp价格/Bazoom价格/Contact/Permanence/Price)给显式 min-width 兜底,
-  //      保证即使 td 空白列也能给 th 标题足够的横向空间换行。
+  // 表格宽度策略: table 撑到内容真实宽度, wrap 出横滚条
   tab.style.minWidth = 'max-content';
-  // 通用列最小宽映射(只补容易压窄的列, 其他列按内容自适配)
-  const _MIN_WIDTH_BY_TEXT = {
-    'Link': '140px',
-    'Price': '90px',
-    'Backlink Type': '110px',
-    'DR': '60px',
-    'DA': '60px',
-    'MeUp价格': '110px',
-    'Meup Price': '110px',
-    'Bazoom价格': '110px',
-    'Bazoom Price': '110px',
-    'Ref. Domains': '110px',
-    'Traffic': '85px',
-    'Country': '80px',
-    'Categories': '95px',
-    'Languages': '105px',
-    'TAT': '75px',
-    'Permanence': '95px',
-    'Contact': '170px',
-    'Cooperation': '105px',
-    'Payment': '90px',
-    'Link Rules': '110px',
-    'Status': '80px',
-  };
-  // 设置 thead th 为吸顶 + 列名可整词换行 (避免每个字符断行成竖排)。
-  // 用 word-break:normal (按空格/语言默认断行点断, 不断英文单词中字符) + overflow-wrap:break-word (单词超出列宽时强制整词断行兜底),
-  // 比 overflow-wrap:anywhere 更保守, 不会出现 "C/a/t/e/g/o/r/i/e/s" 这种竖排事故。
-  thead.querySelectorAll('th').forEach(th => {
-    // 还原之前可能被 fake 代码 setProperty 锁过的 width/min/max, 让 column 模型自动算宽。
-    th.style.removeProperty('width');
-    th.style.removeProperty('min-width');
-    th.style.removeProperty('max-width');
-    th.removeAttribute('width');
-    const label = (th.textContent || '').trim();
-    const minW = _MIN_WIDTH_BY_TEXT[label];
-    // ⚠️ overflow-wrap:anywhere 会把英文单词按字符断行 ("Categories" 拆成 "C/a/t/e/g/o/r/i/e/s" 竖排);
-    //    改用 word-break:normal (允许整词换行, 但按空格断, 不切词中字符) + overflow-wrap:break-word
-    //    兼顾 "Ref. Domains" 这种长词在窄列里换行, 又不会把每个字母断成单字。
-    th.style.cssText = 'position:sticky;top:0;z-index:5;background:linear-gradient(180deg,#e7eaf0 0%,#d8dde6 100%);box-shadow:inset 0 -2px 0 #5a6473;padding:8px 7px;font-size:11.5px;font-weight:700;color:#1f2733;letter-spacing:.2px;border-right:0.5px solid var(--border);border-bottom:0.5px solid var(--border);text-align:left;box-sizing:border-box;white-space:normal;word-break:normal;overflow-wrap:break-word;line-height:1.3;vertical-align:bottom;min-width:' + (minW || '60px');
+  // 1) 隐藏真实 thead (避免占空间 + 避免 native sticky 干扰)
+  thead.style.display = 'none';
+  // 2) 克隆 thead 内部 (深克隆 tr+th, 但不带原始 style)
+  const fake = document.createElement('div');
+  fake.id = tabId + '-sticky-fake';
+  fake.style.cssText = 'position:absolute;top:0;left:0;right:0;z-index:10;pointer-events:auto;background:var(--card);overflow:hidden;will-change:transform';
+  // 内层用一个 table 镜像真实 thead 的 column model
+  const fakeTable = document.createElement('table');
+  fakeTable.style.cssText = 'border-collapse:separate;border-spacing:0;table-layout:auto;width:max-content';
+  // 拷贝 thead 的 innerHTML (tr + th), 移除原 th 的 inline style
+  const realThs = thead.querySelectorAll('th');
+  const clonedTr = document.createElement('tr');
+  realThs.forEach((srcTh) => {
+    const newTh = document.createElement('th');
+    // 拷所有属性 (class 等)
+    for (const attr of srcTh.attributes) {
+      if (attr.name === 'style') continue;
+      newTh.setAttribute(attr.name, attr.value);
+    }
+    // 拷内容 (含 checkbox / 子节点)
+    newTh.innerHTML = srcTh.innerHTML;
+    newTh.style.cssText = 'background:linear-gradient(180deg,#e7eaf0 0%,#d8dde6 100%);box-shadow:inset 0 -2px 0 #5a6473;padding:8px 7px;font-size:11.5px;font-weight:700;color:#1f2733;letter-spacing:.2px;border-right:0.5px solid var(--border);border-bottom:0.5px solid var(--border);text-align:left;box-sizing:border-box;white-space:normal;word-break:normal;overflow-wrap:break-word;line-height:1.3;vertical-align:bottom;background-clip:padding-box';
+    clonedTr.appendChild(newTh);
   });
+  // 表头行包成 thead 放进 fakeTable
+  const fakeThead = document.createElement('thead');
+  fakeThead.appendChild(clonedTr);
+  fakeTable.appendChild(fakeThead);
+  fake.appendChild(fakeTable);
+  // 3) 插入到 wrap 内 (绝对定位 top:0)
+  wrap.appendChild(fake);
+  // 4) 同步列宽: 把真实 th 的 offsetWidth 复制到 fake th
+  function syncWidths(){
+    const realThsNow = thead.querySelectorAll('th');
+    const fakeThsNow = fake.querySelectorAll('th');
+    const tableW = tab.offsetWidth;
+    // fake table 宽度 = 真实表格宽度 (确保列宽对齐)
+    fakeTable.style.width = tableW + 'px';
+    realThsNow.forEach((srcTh, i) => {
+      const fTh = fakeThsNow[i];
+      if (!fTh) return;
+      const w = srcTh.offsetWidth;
+      if (w) fTh.style.width = w + 'px';
+    });
+  }
+  // 5) 跟随 wrap.scroll
+  function syncScroll(){
+    fake.style.transform = 'translate(' + (-wrap.scrollLeft) + 'px, ' + (-wrap.scrollTop) + 'px)';
+  }
+  syncWidths();
+  syncScroll();
+  // 6) 事件绑定 (用 addEventListener 防重复)
+  wrap.removeEventListener('scroll', syncScroll);
+  wrap.addEventListener('scroll', syncScroll, { passive: true });
+  // 7) resize + 列数变化重同步: 用 ResizeObserver 监 wrap/tab
+  if (window._stickyRO) window._stickyRO.disconnect();
+  window._stickyRO = new ResizeObserver(() => { syncWidths(); syncScroll(); });
+  window._stickyRO.observe(tab);
+  window._stickyRO.observe(wrap);
 }
 
 async function loadQuoteTable(){
