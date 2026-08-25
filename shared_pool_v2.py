@@ -3634,7 +3634,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <style>
 :root{--bg:#f8f9fa;--card:#fff;--border:#e0e0e0;--text:#1a1a2e;--muted:#6b7280;--blue:#378add;--green:#1d9e75;--amber:#ba7517;--coral:#d85a30;--purple:#7f77dd;--teal:#0f6e56;}
 *{margin:0;padding:0;box-sizing:border-box}
-body{font:13px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--text);padding:20px 28px;max-width:1200px;margin:0 auto}
+body{font:13px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--text);padding:20px 28px;max-width:1200px;margin:0 auto;overflow-x:hidden}
 h1{font-size:18px;font-weight:500;margin-bottom:2px}
 .sub{font-size:12px;color:var(--muted);margin-bottom:20px}
 .tabs{display:flex;gap:4px;margin-bottom:20px;border-bottom:1px solid var(--border)}
@@ -3674,7 +3674,7 @@ tr.selected-row td{background:#e8f4fd}
 .cat-B{background:#faeeda;color:#854f0b;font-weight:500;padding:2px 7px;border-radius:4px;font-size:11px}
 .cat-C{background:#f1efe8;color:#5f5e5a;font-weight:500;padding:2px 7px;border-radius:4px;font-size:11px}
 .refresh{font-size:11px;color:var(--muted);text-align:right;margin-bottom:12px}
-.page{display:none}.page.active{display:block}
+.page{display:none;min-width:0}.page.active{display:block;min-width:0}
 .btn.active{opacity:.6;box-shadow:inset 0 2px 4px rgba(0,0,0,.2)}
 .log-filter-group{display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap;align-items:center}
 #log-pagination .btn{padding:4px 10px;font-size:11px}
@@ -3865,7 +3865,9 @@ tr.selected-row td{background:#e8f4fd}
     <button class="btn" style="font-size:11px" onclick="downloadQuoteTemplate()">Download Template</button>
     <span id="quote-import-file-result" style="font-size:12px;color:var(--muted)"></span>
   </div>
-  <div style="overflow-x:auto;max-height:calc(100vh - 320px);overflow-y:auto">
+  <!-- 关键: max-width:100% + width:100% 钉死外层不撑出 body，body 永远不会出横向滚动条；
+       横向溢出只在外层 div 内部以滚动条呈现。 -->
+  <div style="overflow-x:auto;overflow-y:auto;width:100%;max-width:100%;min-width:0;max-height:calc(100vh - 360px)">
   <div style="margin-bottom:4px;text-align:right">
     <label style="font-size:11.5px;color:var(--muted);cursor:pointer" onclick="toggleQuoteCols()">
       <input type="checkbox" id="q-show-all-cols"> Hide low-freq columns (DR/DA/Traffic/TAT/etc.)
@@ -3873,7 +3875,9 @@ tr.selected-row td{background:#e8f4fd}
   </div>
   <style>
     /* sticky <th> 需要 border-collapse: separate + border-spacing: 0 才能真正生效 */
-    #quote-table{font-size:12px;border-collapse:separate;border-spacing:0;width:auto;min-width:100%}
+    /* table 宽度: auto 让列宽按内容自适配, min-width:max-content 让"窄屏"下表撑到内容宽,
+       外层 div 有 overflow-x:auto + max-width:100%, 所以超出部分只出横向滚动条, body 不被撑大 */
+    #quote-table{font-size:12px;border-collapse:separate;border-spacing:0;width:auto;min-width:max-content;table-layout:auto}
     #quote-table th,#quote-table td{padding:4px 7px;vertical-align:middle;line-height:1.25;border-bottom:0.5px solid var(--border);border-right:0.5px solid var(--border)}
     #quote-table th:last-child,#quote-table td:last-child{border-right:none}
     #quote-table tbody tr:last-child td{border-bottom:none}
@@ -3926,10 +3930,10 @@ tr.selected-row td{background:#e8f4fd}
     <button class="btn" style="font-size:11px;padding:4px 10px" onclick="PRICE_PAGER.page=1;loadPriceTable()">Search</button>
     <button class="btn green" onclick="openPriceExportPanel()">Export</button>
   </div>
-  <div style="overflow-x:auto;max-height:calc(100vh - 320px);overflow-y:auto">
+  <div style="overflow-x:auto;overflow-y:auto;width:100%;max-width:100%;min-width:0;max-height:calc(100vh - 360px)">
   <style>
     /* sticky <th> 需要 border-collapse: separate + border-spacing: 0 才能真正生效 */
-    #price-table{font-size:12px;border-collapse:separate;border-spacing:0;width:auto;min-width:100%}
+    #price-table{font-size:12px;border-collapse:separate;border-spacing:0;width:auto;min-width:max-content;table-layout:auto}
     #price-table th,#price-table td{padding:4px 7px;vertical-align:middle;line-height:1.25;border-bottom:0.5px solid var(--border);border-right:0.5px solid var(--border)}
     #price-table th:last-child,#price-table td:last-child{border-right:none}
     #price-table tbody tr:last-child td{border-bottom:none}
@@ -4353,10 +4357,11 @@ function _setupStickyHeader(tabId){
   // ⚠️ 整表宽度策略: td 中很多列是数字(DR/DA)或短文本(数字/country code/TAT), 没自然宽,
   //    而 th 标题是英文短词/中文词组(如 Categories/Cooperation/Ref. Domains/Link Rules/Permanence/Contact)本来就窄列放不下。
   //    - 用 `table-layout: auto` (浏览器默认) 下, 浏览器会按 "th 内容需要的最小宽" 算列宽, 严禁再用 overflow-wrap:anywhere 否则会把英文单词按字符断行成竖排 ("Categories" 拆成 "C/a/t/e/g/o/r/i/e/s")。
-  //    - 这里直接给 wrap 显式 `min-width: max-content`, 让表格撑开成它真正需要的总宽 (即使超过 wrap 父容器也没关系, 外层 overflow:auto 会出横向滚动条),
+  //    - 这里把 min-width 设在 table 自身 (不是外层 wrap), 让 table 撑开到它真正需要的总宽,
+  //      外层 wrap 保持 width:100% + overflow-x:auto, 超出部分只出横向滚动条, body 不被撑大。
   //    - 再针对已知易被压窄的列(Languages/Permanence/Cooperation/Categories/Link Rules/Backlink Type/Ref. Domains/MeUp价格/Bazoom价格/Contact/Permanence/Price)给显式 min-width 兜底,
   //      保证即使 td 空白列也能给 th 标题足够的横向空间换行。
-  wrap.style.minWidth = 'max-content';
+  tab.style.minWidth = 'max-content';
   // 通用列最小宽映射(只补容易压窄的列, 其他列按内容自适配)
   const _MIN_WIDTH_BY_TEXT = {
     'Link': '140px',
