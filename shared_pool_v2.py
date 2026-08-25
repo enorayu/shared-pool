@@ -3854,6 +3854,8 @@ tr.selected-row td{background:#e8f4fd}
     <button class="btn green" onclick="importARepliesToQuotes()">Import A-class replies</button>
     <button class="btn" onclick="toggleQuoteImport()">Import from File</button>
     <span id="quote-import-result" style="font-size:12px;color:var(--muted)"></span>
+    <span style="margin-left:12px;font-size:12px;color:var(--muted)">Selected: <span id="quote-sel-count" style="color:var(--text);font-weight:600">0</span></span>
+    <button class="btn" id="quote-delete-btn" style="font-size:11px;padding:4px 10px;display:none;background:#dc3545;color:#fff" onclick="deleteSelectedQuotes()">Delete selected</button>
   </div>
   <!-- Quote Import panel (hidden by default) -->
   <div id="quote-import-panel" style="display:none;margin-bottom:16px;padding:14px;background:var(--card);border:0.5px solid var(--border);border-radius:10px">
@@ -3882,7 +3884,7 @@ tr.selected-row td{background:#e8f4fd}
     #quote-table th:last-child,#quote-table td:last-child{border-right:none}
     #quote-table tbody tr:last-child td{border-bottom:none}
     #quote-table tbody tr{min-height:26px}
-    #quote-table thead th{position:sticky;top:0;z-index:3;background:linear-gradient(180deg,#f8f9fa 0%,#f1f3f5 100%);box-shadow:inset 0 -1.5px 0 #d0d7de;font-size:11px;font-weight:600;white-space:nowrap}
+    #quote-table thead th{position:sticky;top:0;z-index:5;background:linear-gradient(180deg,#e7eaf0 0%,#d8dde6 100%);box-shadow:0 2px 4px rgba(0,0,0,.08),inset 0 -2px 0 #5a6473;font-size:11.5px;font-weight:700;color:#1f2733;white-space:nowrap;letter-spacing:.2px}
     #quote-table th.col-link{width:160px}
     #quote-table th.col-keywords{width:120px}
     #quote-table th.col-linkrules{width:140px}
@@ -3906,16 +3908,16 @@ tr.selected-row td{background:#e8f4fd}
   </table>
   </div>
   <!-- Quote pagination -->
-  <div class="log-filter-group" id="quote-pagination" style="justify-content:center;margin-top:8px;display:none">
-    <button class="btn" onclick="changeQuotePage(-1)">Prev</button>
-    <span id="quote-page-info" style="font-size:12px;color:var(--muted);margin:0 12px">Page 1 / 1</span>
-    <button class="btn" onclick="changeQuotePage(1)">Next</button>
-    <label style="font-size:12px;color:var(--muted);margin-left:16px">Per page:</label>
-    <select id="quote-page-size" onchange="onQuotePageSizeChange()" style="padding:4px 8px;font-size:12px;border:0.5px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text)">
+  <div id="quote-pagination" style="display:none;justify-content:center;align-items:center;gap:10px;margin-top:10px;padding:8px 0;border-top:1px solid var(--border);background:var(--card)">
+    <button class="btn" id="quote-prev-btn" style="font-size:12px;padding:5px 14px" onclick="changeQuotePage(-1)">‹ Prev</button>
+    <span id="quote-page-info" style="font-size:13px;font-weight:600;color:var(--text);min-width:160px;text-align:center">Page 1 / 1</span>
+    <button class="btn" id="quote-next-btn" style="font-size:12px;padding:5px 14px" onclick="changeQuotePage(1)">Next ›</button>
+    <label style="font-size:12px;color:var(--muted);margin-left:18px">Per page:</label>
+    <select id="quote-page-size" onchange="onQuotePageSizeChange()" style="padding:5px 10px;font-size:12px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text)">
       <option value="10">10</option>
       <option value="20" selected>20</option>
-      <option value="20">20</option>
       <option value="50">50</option>
+      <option value="100">100</option>
     </select>
   </div>
 </div>
@@ -4400,7 +4402,7 @@ function _setupStickyHeader(tabId){
     // ⚠️ overflow-wrap:anywhere 会把英文单词按字符断行 ("Categories" 拆成 "C/a/t/e/g/o/r/i/e/s" 竖排);
     //    改用 word-break:normal (允许整词换行, 但按空格断, 不切词中字符) + overflow-wrap:break-word
     //    兼顾 "Ref. Domains" 这种长词在窄列里换行, 又不会把每个字母断成单字。
-    th.style.cssText = 'position:sticky;top:0;z-index:6;background:linear-gradient(180deg,#f8f9fa 0%,#f1f3f5 100%);padding:8px 7px;font-size:11px;font-weight:600;border-bottom:1px solid var(--border);border-right:0.5px solid var(--border);text-align:left;color:var(--text);box-sizing:border-box;white-space:normal;word-break:normal;overflow-wrap:break-word;line-height:1.3;vertical-align:bottom;min-width:' + (minW || '60px');
+    th.style.cssText = 'position:sticky;top:0;z-index:5;background:linear-gradient(180deg,#e7eaf0 0%,#d8dde6 100%);box-shadow:inset 0 -2px 0 #5a6473;padding:8px 7px;font-size:11.5px;font-weight:700;color:#1f2733;letter-spacing:.2px;border-right:0.5px solid var(--border);border-bottom:0.5px solid var(--border);text-align:left;box-sizing:border-box;white-space:normal;word-break:normal;overflow-wrap:break-word;line-height:1.3;vertical-align:bottom;min-width:' + (minW || '60px');
   });
 }
 
@@ -4417,6 +4419,12 @@ async function loadQuoteTable(){
   const maxPage=Math.max(1,Math.ceil(total/limit));
   if(QUOTE_PAGER.page>maxPage){QUOTE_PAGER.page=maxPage;}
   QUOTE_SEL.clear();
+  // 前端展示归一: country / languages 简写实时展成全称
+  const COUNTRY_FULL={IN:'India',US:'United States',GB:'United Kingdom',UK:'United Kingdom',CN:'China',DE:'Germany',FR:'France',IT:'Italy',ES:'Spain',PT:'Portugal',BR:'Brazil',CA:'Canada',AU:'Australia',NZ:'New Zealand',JP:'Japan',KR:'South Korea',RU:'Russia',MX:'Mexico',AR:'Argentina',CL:'Chile',CO:'Colombia',PE:'Peru',NL:'Netherlands',BE:'Belgium',SE:'Sweden',NO:'Norway',FI:'Finland',DK:'Denmark',PL:'Poland',TR:'Turkey',GR:'Greece',EG:'Egypt',ZA:'South Africa',NG:'Nigeria',KE:'Kenya',MA:'Morocco',DZ:'Algeria',TN:'Tunisia',BF:'Burkina Faso',ML:'Mali',CM:'Cameroon',TD:'Chad',PK:'Pakistan',BD:'Bangladesh',LK:'Sri Lanka',NP:'Nepal',TH:'Thailand',VN:'Vietnam',ID:'Indonesia',MY:'Malaysia',SG:'Singapore',PH:'Philippines',HK:'Hong Kong',TW:'Taiwan',AE:'United Arab Emirates',SA:'Saudi Arabia',IL:'Israel',CH:'Switzerland',AT:'Austria',IE:'Ireland',CZ:'Czechia',HU:'Hungary',RO:'Romania',UA:'Ukraine',HN:'Honduras',BO:'Bolivia',VE:'Venezuela',EC:'Ecuador',UY:'Uruguay',PY:'Paraguay',CR:'Costa Rica',PA:'Panama',DO:'Dominican Republic',CU:'Cuba',JM:'Jamaica',TT:'Trinidad and Tobago',GT:'Guatemala',SV:'El Salvador',NI:'Nicaragua'};
+  const LANG_FULL={en:'English',fr:'French',es:'Spanish',de:'German',it:'Italian',pt:'Portuguese',nl:'Dutch',ru:'Russian',pl:'Polish',tr:'Turkish',ar:'Arabic',zh:'Chinese',ja:'Japanese',ko:'Korean',hi:'Hindi',bn:'Bengali',ur:'Urdu',fa:'Persian',he:'Hebrew',th:'Thai',vi:'Vietnamese',id:'Indonesian',ms:'Malay',sv:'Swedish',da:'Danish',fi:'Finnish',cs:'Czech',hu:'Hungarian',ro:'Romanian',el:'Greek',uk:'Ukrainian',sw:'Swahili'};
+  function _fullCountry(v){if(!v)return v;v=String(v).trim();if(!v)return v;if(COUNTRY_FULL[v.toUpperCase()])return COUNTRY_FULL[v.toUpperCase()];if(/ /.test(v))return v;return v;}
+  function _fullLang(v){if(!v)return v;v=String(v).trim();if(!v)return v;if(v in LANG_FULL)return LANG_FULL[v];if(v.includes('/')){const ps=v.split('/').map(s=>s.trim());ps[0]=LANG_FULL[ps[0].toLowerCase()]||ps[0];return ps.join(' / ');}return v;}
+  (r.quotes||[]).forEach(q=>{q.country=_fullCountry(q.country);q.languages=_fullLang(q.languages);});
   // Quote Pool: fixed columns (Jenny template), always show all, empty if no data
   const allQuotes = r.quotes || [];
 
@@ -4498,9 +4506,13 @@ async function loadQuoteTable(){
   _setupStickyHeader('quote-table');
   _updateSelCount(QUOTE_SEL,'quote-sel-count','quote-delete-btn');
   document.getElementById('quote-delete-btn').style.display=QUOTE_SEL.size?'inline-block':'none';
-  document.getElementById('quote-page-info').textContent='Page '+QUOTE_PAGER.page+' / '+maxPage+' ('+total+' records)';
+  document.getElementById('quote-page-info').textContent='Page '+QUOTE_PAGER.page+' / '+maxPage+' ('+total.toLocaleString()+' records)';
   const qp=document.getElementById('quote-pagination');
-  if(qp)qp.style.display=total>limit?'flex':'none';
+  if(qp){qp.style.display=total>limit?'flex':'none';}
+  const prev=document.getElementById('quote-prev-btn');
+  const next=document.getElementById('quote-next-btn');
+  if(prev)prev.disabled=QUOTE_PAGER.page<=1;
+  if(next)next.disabled=QUOTE_PAGER.page>=maxPage;
   console.log('[Quote] total='+total+' limit='+limit+' showPagination='+(total>limit));
 }
 function toggleQuoteAll(chk){
