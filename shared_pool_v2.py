@@ -2489,30 +2489,100 @@ def quote_import():
         return jsonify({"error": "Empty file"}), 400
 
     # Smart column mapping (English + Chinese)
+    # ⚠️ 关键修复: 之前用 `in` 子串匹配会误劫持 —— 例如列名 `ref_domains` 含 "domain"
+    #    被错映射成 domain, 真正的 `domain` 列反而落空; `bazoom_price` 含 "price" 同理劫持了
+    #    price 列。导致 domain/price 全空 → 全部 skip。
+    #    改法: 先**精确匹配**短列名(==), 子串匹配仅作 fallback, 且对 domain/price 这类
+    #    高频词排除复合列名(ref_domains / bazoom_price / meup_price 等)。
     def map_col(col):
         cl = col.lower().strip()
-        # email
-        if any(k in cl for k in ['邮箱', 'email', 'mail', 'e-mail']): return 'email'
-        # domain
-        if any(k in cl for k in ['域名', 'domain', '网站']): return 'domain'
-        # supplier
-        if any(k in cl for k in ['供应商', 'supplier', '发件人', 'from', '联系人', 'contact', 'name']): return 'supplier'
-        # contact_email
-        if any(k in cl for k in ['联系邮箱', 'contact_email', 'contact email', 'contact mail']): return 'contact_email'
-        # niche
-        if any(k in cl for k in ['领域', 'niche', '行业', 'industry', '细分']): return 'niche'
-        # country
-        if any(k in cl for k in ['国家', 'country', '地区', 'region']): return 'country'
-        # traffic (注意: 不要匹配 'da' / 'domain authority', 否则 DA 列会被误映射成 traffic)
-        if any(k in cl for k in ['流量', 'traffic', '访问量', 'visits']): return 'traffic'
-        # da
-        if any(k in cl for k in ['da', 'domain authority', '权威度']): return 'da'
-        # site_category
-        if any(k in cl for k in ['网站分类', 'site_category', 'site type', 'category', '分类']): return 'site_category'
-        # cooperation_type
-        if any(k in cl for k in ['合作类型', 'cooperation_type', 'collaboration', 'collaboration types', 'type', '合作']): return 'cooperation_type'
-        # price
-        if any(k in cl for k in ['价格', 'pricing', 'price', '报价', 'cost', 'fee']): return 'price'
+        # ---- 精确匹配优先 (防止复合列名劫持) ----
+        exact = {
+            'email': 'email', '邮箱': 'email', 'e-mail': 'email', 'mail': 'email',
+            'domain': 'domain', '域名': 'domain', '网站': 'domain',
+            'price': 'price', '价格': 'price', 'pricing': 'price', '报价': 'price',
+            'supplier': 'supplier', '供应商': 'supplier',
+            'contact': 'supplier', '联系人': 'supplier', '发件人': 'supplier',
+            'contact_email': 'contact_email', '联系邮箱': 'contact_email',
+            'niche': 'niche', '领域': 'niche', '行业': 'niche', 'industry': 'niche',
+            'country': 'country', '国家': 'country', '地区': 'country', 'region': 'country',
+            'traffic': 'traffic', '流量': 'traffic', '访问量': 'traffic', 'visits': 'traffic',
+            'da': 'da', '权威度': 'da',
+            'dr': 'dr', '域名评级': 'dr',
+            'site_category': 'site_category', '网站分类': 'site_category', '分类': 'site_category', 'category': 'site_category',
+            'cooperation_type': 'cooperation_type', '合作类型': 'cooperation_type', '合作': 'cooperation_type',
+            'link_rules': 'link_rules', '链接规则': 'link_rules', '链接要求': 'link_rules',
+            'permanence': 'permanence', '永久': 'permanence', 'permanent': 'permanence',
+            'content': 'content', '内容': 'content', '文章要求': 'content',
+            'tat': 'tat', '时效': 'tat', '交付时间': 'tat', 'turnaround': 'tat',
+            'payment': 'payment', '付款': 'payment', '支付方式': 'payment',
+            'discount': 'discount', '折扣': 'discount', '优惠': 'discount',
+            'additional_services': 'additional_services', '附加服务': 'additional_services', '增值服务': 'additional_services',
+            'requirements': 'requirements', '要求': 'requirements', '条件': 'requirements',
+            'reply_content': 'reply_content', '回复内容': 'reply_content', '正文': 'reply_content',
+            'status': 'status', '状态': 'status',
+            'notes': 'notes', '备注': 'notes', 'note': 'notes',
+            'priority': 'priority', '优先级': 'priority', '重要度': 'priority',
+            'meup_price': 'meup_price', 'bazoom_price': 'bazoom_price',
+            'ref_domains': 'ref_domains', 'languages': 'languages', '语言': 'languages',
+            'data_status': 'data_status', 'data status': 'data_status',
+        }
+        if cl in exact:
+            return exact[cl]
+        # ---- 子串 fallback (仅对未被精确匹配的复合列名) ----
+        # domain: 排除 ref_domains / sub_domains 等 (它们不含独立 "domain" 语义, 且已被上面处理)
+        if cl == 'ref_domains' or cl.endswith('_domains') or 'domain authority' in cl:
+            return None  # 不映射, 留待专用字段
+        if '域名' in cl or cl == 'domain' or cl == 'website':
+            return 'domain'
+        # price: 排除 bazoom_price / meup_price / list_price 等复合价 (它们应映射独立字段, 非主 price)
+        if cl in ('bazoom_price', 'meup_price', 'list_price', 'sale_price', 'regular_price'):
+            return None
+        if '价格' in cl or 'pricing' in cl or cl == 'price' or '报价' in cl or 'cost' in cl or 'fee' in cl:
+            return 'price'
+        if '邮箱' in cl or 'email' in cl or 'e-mail' in cl:
+            return 'email'
+        if '供应商' in cl or 'supplier' in cl or '发件人' in cl or 'from' in cl or '联系人' in cl or 'contact' in cl or 'name' in cl:
+            return 'supplier'
+        if '联系邮箱' in cl or 'contact_email' in cl or 'contact email' in cl or 'contact mail' in cl:
+            return 'contact_email'
+        if '领域' in cl or 'niche' in cl or '行业' in cl or 'industry' in cl or '细分' in cl:
+            return 'niche'
+        if '国家' in cl or 'country' in cl or '地区' in cl or 'region' in cl:
+            return 'country'
+        if '流量' in cl or 'traffic' in cl or '访问量' in cl or 'visits' in cl:
+            return 'traffic'
+        if cl == 'da' or '权威度' in cl:
+            return 'da'
+        if '网站分类' in cl or 'site_category' in cl or 'site type' in cl or 'category' in cl or '分类' in cl:
+            return 'site_category'
+        if '合作类型' in cl or 'cooperation_type' in cl or 'collaboration' in cl or 'type' in cl or '合作' in cl:
+            return 'cooperation_type'
+        if '链接规则' in cl or 'link_rules' in cl or 'link rule' in cl or 'publishing' in cl or '链接要求' in cl:
+            return 'link_rules'
+        if '永久' in cl or 'permanence' in cl or 'permanent' in cl or '永久链接' in cl:
+            return 'permanence'
+        if '内容' in cl or 'content' in cl or '文章要求' in cl:
+            return 'content'
+        if '时效' in cl or 'tat' in cl or 'turnaround' in cl or '交付时间' in cl or 'delivery' in cl:
+            return 'tat'
+        if '付款' in cl or 'payment' in cl or 'pay' in cl or '支付方式' in cl:
+            return 'payment'
+        if '折扣' in cl or 'discount' in cl or '优惠' in cl:
+            return 'discount'
+        if '附加服务' in cl or 'additional_services' in cl or 'extra' in cl or '增值服务' in cl:
+            return 'additional_services'
+        if '要求' in cl or 'requirements' in cl or 'requirement' in cl or 'content/link' in cl or '内容要求' in cl or '条件' in cl:
+            return 'requirements'
+        if '回复内容' in cl or 'reply_content' in cl or 'reply' in cl or '正文' in cl or 'body' in cl or 'message' in cl:
+            return 'reply_content'
+        if '状态' in cl or 'status' in cl or 'state' in cl:
+            return 'status'
+        if '备注' in cl or 'notes' in cl or 'note' in cl or 'comment' in cl:
+            return 'notes'
+        if '优先级' in cl or 'priority' in cl or '重要度' in cl:
+            return 'priority'
+        return None
         # link_rules
         if any(k in cl for k in ['链接规则', 'link_rules', 'link rule', 'publishing guidelines', 'publishing', '链接要求']): return 'link_rules'
         # permanence
@@ -2644,10 +2714,15 @@ def quote_import():
             "da": (row.get(col_map.get('da', ''), '') or '')[:50],
             "dr": (row.get(col_map.get('dr', ''), '') or '')[:50],
             "site_category": (row.get(col_map.get('site_category', ''), '') or '')[:50],
+            "categories": (row.get(col_map.get('site_category', ''), '') or '')[:200],
+            "languages": (row.get(col_map.get('languages', ''), '') or '')[:100],
             "cooperation_type": (row.get(col_map.get('cooperation_type', ''), '') or '')[:50],
             "price": raw_price,
             "normalized_price": norm["normalized_price"],
             "normalized_currency": norm["normalized_currency"],
+            "meup_price": (row.get(col_map.get('meup_price', ''), '') or '')[:50],
+            "bazoom_price": (row.get(col_map.get('bazoom_price', ''), '') or '')[:50],
+            "ref_domains": (row.get(col_map.get('ref_domains', ''), '') or '')[:50],
             "link_rules": (row.get(col_map.get('link_rules', ''), '') or '')[:200],
             "permanence": (row.get(col_map.get('permanence', ''), '') or '')[:50],
             "content": (row.get(col_map.get('content', ''), '') or '')[:500],
@@ -2657,6 +2732,7 @@ def quote_import():
             "additional_services": (row.get(col_map.get('additional_services', ''), '') or '')[:200],
             "requirements": (row.get(col_map.get('requirements', ''), '') or '')[:500],
             "reply_content": (row.get(col_map.get('reply_content', ''), '') or '')[:8000],
+            "data_status": (row.get(col_map.get('data_status', ''), '') or '')[:50],
             "status": (row.get(col_map.get('status', ''), '') or 'New')[:20],
             "priority": priority,
             "notes": (row.get(col_map.get('notes', ''), '') or '')[:500],
