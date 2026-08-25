@@ -1950,6 +1950,23 @@ def _convert_price_to_usd(price_str: str):
     return first_val, ("USD" if not fx_unresolved else main_ccy), fx_unresolved
 
 
+def _to_numeric(val):
+    """
+    把单元格值转成可写入 Supabase numeric 列的值:
+    空 / 空字符串 / None -> None (NULL, 不传 '' 否则 Postgres 报 22P02);
+    非空 -> 尝试 float, 失败(含单位/乱码) -> None 而不是抛错中断整批。
+    """
+    if val is None:
+        return None
+    s = str(val).strip().replace(',', '')
+    if not s:
+        return None
+    try:
+        return float(s)
+    except (ValueError, TypeError):
+        return None
+
+
 def _normalize_price_fields(price_str: str):
     """
     从 price 原始文本(如 "$35/post / $20/post" 或 "£120/post / £90/link")
@@ -2615,6 +2632,18 @@ def quote_import():
         if mapped:
             col_map[mapped] = col
 
+    # quote_id 是 NOT NULL 整数列且无 serial default, 必须显式提供。
+    # 先取当前 max, 再按批内序号自增分配, 避免与已有/并发插入冲突。
+    next_id = 1
+    try:
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/quote_pool?select=quote_id&order=quote_id.desc&limit=1",
+            headers=AUTH_HEADERS, timeout=30)
+        if r.status_code == 200 and r.json():
+            next_id = (r.json()[0].get("quote_id") or 0) + 1
+    except Exception:
+        pass
+
     # Get existing (email, domain, price) triples for dedup.
     # Same email+domain with DIFFERENT price = distinct quote (keep both).
     existing = set()
@@ -2704,6 +2733,7 @@ def quote_import():
                 priority = 0
 
         record = {
+            "quote_id": next_id,
             "email": email,
             "domain": domain,
             "supplier": (row.get(col_map.get('supplier', ''), '') or '')[:200],
@@ -2720,9 +2750,12 @@ def quote_import():
             "price": raw_price,
             "normalized_price": norm["normalized_price"],
             "normalized_currency": norm["normalized_currency"],
-            "meup_price": (row.get(col_map.get('meup_price', ''), '') or '')[:50],
-            "bazoom_price": (row.get(col_map.get('bazoom_price', ''), '') or '')[:50],
-            "ref_domains": (row.get(col_map.get('ref_domains', ''), '') or '')[:50],
+            # ⚠️ meup_price / bazoom_price / ref_domains 在 Supabase 是 numeric 类型,
+            #    空字符串 '' 会让 Postgres 报 "invalid input syntax for type numeric" 拒绝整批。
+            #    空值必须传 None (NULL), 非空尝试转 float, 转不成则留 None。
+            "meup_price": _to_numeric(row.get(col_map.get('meup_price', ''), '')),
+            "bazoom_price": _to_numeric(row.get(col_map.get('bazoom_price', ''), '')),
+            "ref_domains": _to_numeric(row.get(col_map.get('ref_domains', ''), '')),
             "link_rules": (row.get(col_map.get('link_rules', ''), '') or '')[:200],
             "permanence": (row.get(col_map.get('permanence', ''), '') or '')[:50],
             "content": (row.get(col_map.get('content', ''), '') or '')[:500],
@@ -2740,6 +2773,7 @@ def quote_import():
             "discovered_at": now_iso(),
         }
         batch.append(record)
+        next_id += 1
 
         if len(batch) >= BATCH_SIZE:
             flush_batch()
