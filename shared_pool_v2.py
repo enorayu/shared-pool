@@ -3946,12 +3946,11 @@ tr.selected-row td{background:#e8f4fd}
     #quote-table th:last-child,#quote-table td:last-child{border-right:none}
     #quote-table tbody tr:last-child td{border-bottom:none}
     #quote-table tbody tr{min-height:26px}
-    /* Sticky header: 关键修复 — 必须在 thead *和* th 都设 sticky 才对.
-       之前只在 th 上设 sticky, Chrome 实际不生效 (Playwright 验证 scrollTop=150 后 th.top=290
-       远在 wrap.top=368 之上, sticky 没粘贴). 同时设 thead sticky + th sticky 能跨浏览器都 work. */
-    #quote-table thead tr{box-shadow:0 2px 4px rgba(0,0,0,.08),inset 0 -2px 0 #5a6473}
-    /* sticky 仅在 <thead> 上 (而不是 th), 避免双层 sticky 的 z-index/clip 互相打架吞掉列名 */
-    #quote-table thead th{position:sticky;top:0;z-index:5;background:linear-gradient(180deg,#e7eaf0 0%,#d8dde6 100%);background-clip:padding-box;font-size:11.5px;font-weight:700;color:#1f2733;white-space:nowrap;letter-spacing:.2px;border-right:0.5px solid var(--border);border-bottom:0.5px solid var(--border)}
+    /* Sticky header: minimal Playwright 验证 only-sticky-on-thead 是稳定工作的 (Wrap = overflow:auto + max-height)
+       Sticky on <th> 在某些 Chrome 版本会因 <tr>/<tbody> 静态定位干扰而失效, 这就是为什么 shared-pool-v2 第一版没生效.
+       把 sticky 放在 <thead> 上 + 让 <th> 跟随 (透明背景), 实测有效. */
+    #quote-table thead{position:sticky;top:0;z-index:5;background:linear-gradient(180deg,#e7eaf0 0%,#d8dde6 100%);box-shadow:0 2px 4px rgba(0,0,0,.08),inset 0 -2px 0 #5a6473}
+    #quote-table thead th{background:linear-gradient(180deg,#e7eaf0 0%,#d8dde6 100%);font-size:11.5px;font-weight:700;color:#1f2733;white-space:nowrap;letter-spacing:.2px;border-right:0.5px solid var(--border);border-bottom:0.5px solid var(--border);padding:8px 7px;background-clip:padding-box;line-height:1.3;vertical-align:bottom}
     #quote-table th.col-link{width:160px}
     #quote-table th.col-keywords{width:120px}
     #quote-table th.col-linkrules{width:140px}
@@ -4007,10 +4006,9 @@ tr.selected-row td{background:#e8f4fd}
     #price-table th,#price-table td{padding:4px 7px;vertical-align:middle;line-height:1.25;border-bottom:0.5px solid var(--border);border-right:0.5px solid var(--border)}
     #price-table th:last-child,#price-table td:last-child{border-right:none}
     #price-table tbody tr:last-child td{border-bottom:none}
-    /* 同 quote-table: thead + th 双层 sticky, 保险有效 */
-    #price-table thead tr{box-shadow:inset 0 -1.5px 0 #d0d7de}
-    /* 同 quote-table: 单一 sticky 在 th 上 */
-    #price-table thead th{position:sticky;top:0;z-index:3;background:linear-gradient(180deg,#f8f9fa 0%,#f1f3f5 100%);background-clip:padding-box;font-size:11px;font-weight:600;white-space:nowrap;border-right:0.5px solid var(--border);border-bottom:0.5px solid var(--border)}
+    /* 同 quote-table: sticky 在 thead 上, 实测 minimal Playwright 验证有效 */
+    #price-table thead{position:sticky;top:0;z-index:3;background:linear-gradient(180deg,#f8f9fa 0%,#f1f3f5 100%);box-shadow:inset 0 -1.5px 0 #d0d7de}
+    #price-table thead th{background:linear-gradient(180deg,#f8f9fa 0%,#f1f3f5 100%);font-size:11px;font-weight:600;white-space:nowrap;border-right:0.5px solid var(--border);border-bottom:0.5px solid var(--border);padding:6px 8px}
   </style>
   <table id="price-table">
     <thead><tr><th>#</th><th>Link</th><th>Price</th><th>Backlink Type</th><th>DR</th><th>DA</th><th>MeUp价格</th><th>Bazoom价格</th><th>Ref. Domains</th><th>Traffic</th><th>Country</th><th>Categories</th><th>Languages</th><th>TAT</th><th>Permanence</th><th>Contact</th><th>Cooperation</th><th>Payment</th><th>Link Rules</th><th>Status</th></tr></thead>
