@@ -3927,10 +3927,6 @@ tr.selected-row td{background:#e8f4fd}
     <button class="btn" style="font-size:11px" onclick="downloadQuoteTemplate()">Download Template</button>
     <span id="quote-import-file-result" style="font-size:12px;color:var(--muted)"></span>
   </div>
-  // Quote Pool 滚动容器 (CSS sticky 由浏览器原生处理, 不需要任何 JS)
-// 只要保证: (1) 容器有 overflow + max-height 让其内部出滚动条;
-//          (2) <thead> 不被 JS 隐藏 (display:none 会让 sticky 失效)。
-// 给容器加个稳定 id, 方便调试。
   <div id="quote-table-scroll" style="overflow-x:auto;overflow-y:auto;width:100%;max-width:100%;min-width:0;max-height:calc(100vh - 360px)">
   <div style="margin-bottom:4px;text-align:right">
     <label style="font-size:11.5px;color:var(--muted);cursor:pointer" onclick="toggleQuoteCols()">
@@ -3941,14 +3937,11 @@ tr.selected-row td{background:#e8f4fd}
     /* sticky <th> 需要 border-collapse: separate + border-spacing: 0 才能真正生效 */
     /* table 宽度: auto 让列宽按内容自适配, min-width:max-content 让"窄屏"下表撑到内容宽,
        外层 div 有 overflow-x:auto + max-width:100%, 所以超出部分只出横向滚动条, body 不被撑大 */
-    #quote-table{font-size:12px;border-collapse:separate;border-spacing:0;width:auto;min-width:max-content;table-layout:auto}
+    #quote-table{font-size:12px;border-collapse:separate;border-spacing:0;width:auto;min-width:max-content;table-layout:auto;overflow:visible}
     #quote-table th,#quote-table td{padding:4px 7px;vertical-align:middle;line-height:1.25;border-bottom:0.5px solid var(--border);border-right:0.5px solid var(--border)}
     #quote-table th:last-child,#quote-table td:last-child{border-right:none}
     #quote-table tbody tr:last-child td{border-bottom:none}
     #quote-table tbody tr{min-height:26px}
-    /* Sticky header: minimal Playwright 验证 only-sticky-on-thead 是稳定工作的 (Wrap = overflow:auto + max-height)
-       Sticky on <th> 在某些 Chrome 版本会因 <tr>/<tbody> 静态定位干扰而失效, 这就是为什么 shared-pool-v2 第一版没生效.
-       把 sticky 放在 <thead> 上 + 让 <th> 跟随 (透明背景), 实测有效. */
     #quote-table thead{position:sticky;top:0;z-index:5;background:linear-gradient(180deg,#e7eaf0 0%,#d8dde6 100%);box-shadow:0 2px 4px rgba(0,0,0,.08),inset 0 -2px 0 #5a6473}
     #quote-table thead th{background:linear-gradient(180deg,#e7eaf0 0%,#d8dde6 100%);font-size:11.5px;font-weight:700;color:#1f2733;white-space:nowrap;letter-spacing:.2px;border-right:0.5px solid var(--border);border-bottom:0.5px solid var(--border);padding:8px 7px;background-clip:padding-box;line-height:1.3;vertical-align:bottom}
     #quote-table th.col-link{width:160px}
@@ -3998,11 +3991,10 @@ tr.selected-row td{background:#e8f4fd}
     <button class="btn" style="font-size:11px;padding:4px 10px" onclick="PRICE_PAGER.page=1;loadPriceTable()">Search</button>
     <button class="btn green" onclick="openPriceExportPanel()">Export</button>
   </div>
-  <!-- Price Pool 滚动容器: CSS sticky 接管吸顶 (line 4004) -->
   <div id="price-table-scroll" style="overflow-x:auto;overflow-y:auto;width:100%;max-width:100%;min-width:0;max-height:calc(100vh - 360px)">
   <style>
     /* sticky <th> 需要 border-collapse: separate + border-spacing: 0 才能真正生效 */
-    #price-table{font-size:12px;border-collapse:separate;border-spacing:0;width:auto;min-width:max-content;table-layout:auto}
+    #price-table{font-size:12px;border-collapse:separate;border-spacing:0;width:auto;min-width:max-content;table-layout:auto;overflow:visible}
     #price-table th,#price-table td{padding:4px 7px;vertical-align:middle;line-height:1.25;border-bottom:0.5px solid var(--border);border-right:0.5px solid var(--border)}
     #price-table th:last-child,#price-table td:last-child{border-right:none}
     #price-table tbody tr:last-child td{border-bottom:none}
@@ -4405,15 +4397,6 @@ function onReplyPageSizeChange(){
   REPLY_PAGER.page=1;
   loadReplyTable();
 }
-
-// Quote Pool 列头吸顶方案说明 (之前两版都失败了):
-// - v1 (CSS sticky <th>): 被 _setupStickyHeader 的 inline cssText 覆盖, 在浏览器里有的版本失效。
-// - v2 (fake JS-driven sticky): fake div 找不到滚动容器, 直接挂在 body 之外的 div,
-//   形成"标题栏浮在第一行 / 数据穿插"的视觉污染。
-// - 当前 v3: 改回纯 CSS sticky. line 3947 那个 <style>#quote-table thead th {position:sticky;top:0}
-//   现在能正常生效——前提是 _setupStickyHeader 不再存在, 不再有人调 thead.style.display='none'。
-// 价格表 price-table 同理 (#price-table thead th {position:sticky;top:0} 在 line 4018 附近)。
-// 如果日后真的需要重新实现, 在改之前先 Playwright 验, 不再盲推。
 
 async function loadQuoteTable(){
   const limit=QUOTE_PAGER.pageSize;
