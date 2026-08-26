@@ -802,22 +802,43 @@ def email_export():
     # 该函数在单个事务内 SELECT ... FOR UPDATE SKIP LOCKED + 立即 UPDATE,
     # 彻底消除旧 check-then-act 的并发竞态 (两人同时导出会抢同一批邮箱)。
     # 数据库侧已创建该函数 (见 SQL: export_emails_atomic)。
-    try:
-        rpc_resp = requests.post(
-            f"{REST_URL}/rpc/export_emails_atomic",
-            headers={**AUTH_HEADERS, "Content-Type": "application/json", "Prefer": "return=representation"},
-            json={"p_user": user, "p_count": count},
-            timeout=60,
-        )
-        if rpc_resp.status_code not in (200, 201):
-            return jsonify({
-                "error": f"atomic export failed: HTTP {rpc_resp.status_code}",
-                "detail": rpc_resp.text[:500],
-                "exported": 0,
-            }), 500
-        emails = rpc_resp.json()
-    except Exception as e:
-        return jsonify({"error": f"atomic export exception: {str(e)}", "exported": 0}), 500
+    # RPC export_emails_atomic 单次最多返回 1000 条 (函数内部 LIMIT),
+    # 因此循环调用直到凑满 count 或无可导出, 避免 UNSENT 被锁却只回传部分导致悬空。
+    emails = []
+    remaining = count
+    rpc_round = 0
+    while remaining > 0:
+        rpc_round += 1
+        try:
+            rpc_resp = requests.post(
+                f"{REST_URL}/rpc/export_emails_atomic",
+                headers={**AUTH_HEADERS, "Content-Type": "application/json", "Prefer": "return=representation"},
+                json={"p_user": user, "p_count": min(remaining, 1000)},
+                timeout=60,
+            )
+            if rpc_resp.status_code not in (200, 201):
+                # 非首轮已拿到部分数据时, 不整体失败, 返回已拿到部分
+                if emails:
+                    break
+                return jsonify({
+                    "error": f"atomic export failed: HTTP {rpc_resp.status_code}",
+                    "detail": rpc_resp.text[:500],
+                    "exported": 0,
+                }), 500
+            chunk = rpc_resp.json() if isinstance(rpc_resp.json(), list) else []
+        except Exception as e:
+            if emails:
+                break
+            return jsonify({"error": f"atomic export exception: {str(e)}", "exported": 0}), 500
+        if not chunk:
+            break
+        emails.extend(chunk)
+        remaining -= len(chunk)
+        if len(chunk) < min(remaining + len(chunk), 1000):
+            # 本轮返回少于请求量, 说明已无更多 UNSENT
+            break
+        if rpc_round >= 50:  # 安全上限, 防死循环
+            break
 
     if not emails:
         return jsonify({"exported": 0, "filename": ""})
@@ -854,6 +875,67 @@ def email_export():
                    f"Batch: {batch_id}, Source: 已提取")
 
     return jsonify({"exported": len(emails), "filename": filename, "batch_id": batch_id, "csv_content": csv_content})
+
+
+@app.route("/api/email/reexport_claimed", methods=["POST"])
+def email_reexport_claimed():
+    """
+    回收接口: 把已被 export_emails_atomic 标记为 SENT + claimed_by=user 但下游未真正消费的
+    悬空邮箱重新导出 (仅查询, 不改状态), 用于补回因 RPC 单次 LIMIT 1000 导致的丢失。
+    分页用 Supabase REST 直查 email_pool, 每页 1000。
+    """
+    data = request.get_json(force=True)
+    user = data.get("user", "").strip()
+    if not user:
+        return jsonify({"error": "user is required", "exported": 0}), 400
+    limit = min(int(data.get("limit", 20000)), 50000)
+    offset = 0
+    page = 1000
+    rows = []
+    while len(rows) < limit:
+        q = (f"{REST_URL}/email_pool"
+             f"?claimed_by=eq.{user}"
+             f"&send_status=eq.SENT"
+             f"&select=email,domain,send_status,source,claimed_by"
+             f"&limit={page}&offset={offset}&order=email_id.asc")
+        try:
+            r = requests.get(q, headers=AUTH_HEADERS, timeout=60)
+            if r.status_code != 200:
+                break
+            batch = r.json() if isinstance(r.json(), list) else []
+        except Exception:
+            break
+        if not batch:
+            break
+        rows.extend(batch)
+        if len(batch) < page:
+            break
+        offset += page
+    if not rows:
+        return jsonify({"exported": 0, "filename": "", "batch_id": ""})
+
+    now = now_iso()
+    batch_id = f"email_reclaim_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{user}"
+    filename = f"{batch_id}.csv"
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["#", "email", "domain", "send_status", "source"])
+    for idx, e in enumerate(rows, 1):
+        writer.writerow([
+            idx,
+            safe_str(e.get("email")),
+            e.get("domain") or "",
+            e.get("send_status", "SENT"),
+            safe_str(e.get("source")),
+        ])
+    csv_content = output.getvalue()
+    export_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shared_pool_exports")
+    os.makedirs(export_dir, exist_ok=True)
+    with open(os.path.join(export_dir, filename), "w", newline="", encoding="utf-8") as f:
+        f.write(csv_content)
+    _log_operation("email_reexport_claimed", user, "email_pool", len(rows),
+                   f"Batch: {batch_id}, reclaimed hung emails")
+    return jsonify({"exported": len(rows), "filename": filename, "batch_id": batch_id, "csv_content": csv_content})
 
 
 @app.route("/api/email/stats", methods=["GET"])
