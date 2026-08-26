@@ -856,6 +856,65 @@ def email_export():
     return jsonify({"exported": len(emails), "filename": filename, "batch_id": batch_id, "csv_content": csv_content})
 
 
+@app.route("/api/email/export/<batch_id>", methods=["GET"])
+def email_export_redownload(batch_id):
+    """按 batch_id 重新下载/生成 CSV — 即使前端掉了文件也能补下
+
+    - 先查 shared_pool_exports/<batch_id>.csv 缓存(端点本身写的)
+    - 没有就从 email_pool 实时按 batch 重新生成(从 operation_log 找 user+批次)
+    """
+    safe_batch = re.sub(r'[^A-Za-z0-9_.-]', '', batch_id)[:128]
+    if not safe_batch or safe_batch != batch_id:
+        return jsonify({"error": "invalid batch_id"}), 400
+    user = request.args.get("user", "").strip()
+    if not user:
+        return jsonify({"error": "user is required (?user=name)"}), 400
+
+    export_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shared_pool_exports")
+    cached = os.path.join(export_dir, safe_batch + ".csv")
+    if os.path.exists(cached):
+        with open(cached, "r", encoding="utf-8") as f:
+            csv_content = f.read()
+        return Response(
+            csv_content,
+            mimetype="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{safe_batch}.csv"'},
+        )
+
+    # 没有缓存文件, 查 operation_log 找该批次的 count/时间
+    r_op = db.select("operation_log", select="created_at,details,row_count",
+                      filters={"user": user, "action": "email_export"},
+                      order="created_at", ascending=False, limit=200)
+    if not r_op:
+        return jsonify({"error": "no operation_log found for this user"}), 404
+    matched = None
+    for op in r_op:
+        if isinstance(op.get("details"), str) and safe_batch in op["details"]:
+            matched = op; break
+    if not matched:
+        return jsonify({"error": "batch not found in operation_log"}), 404
+    cnt = int(matched.get("row_count") or 0)
+    if cnt <= 0:
+        return jsonify({"error": "operation_log row_count=0"}), 404
+    pool = db.select("email_pool", select="email,domain,send_status,source,claim_time",
+                      filters={"claimed_by": user, "send_status": "SENT"},
+                      order="claim_time", ascending=True, limit=min(cnt, 5000))
+    if not pool:
+        return jsonify({"error": "no rows in email_pool for this batch"}), 404
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["#", "email", "domain", "send_status", "source"])
+    for idx, e in enumerate(pool, 1):
+        writer.writerow([idx, safe_str(e.get("email")), e.get("domain") or "",
+                         e.get("send_status", "SENT"), safe_str(e.get("source"))])
+    csv_content = output.getvalue()
+    return Response(
+        csv_content,
+        mimetype="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{safe_batch}.csv"'},
+    )
+
+
 @app.route("/api/email/stats", methods=["GET"])
 def email_stats():
     """Email pool statistics (from email_pool table)."""
@@ -5143,17 +5202,37 @@ async function distributeDomains(){
   loadStats();loadDomainTable();
 }
 async function exportEmails(){
+  const btn=document.querySelector('button[onclick="exportEmails()"]')||event&&event.target;
+  if(btn&&btn.disabled){return;}  // 防重: 已锁定则直接返回
   const user=getUserName();
   if(!user){alert('Please enter your name in "My Name" field first');return;}
-  const count=document.getElementById('e-count').value;
-  const r=await fetch(API+'/api/email/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user,count:parseInt(count)})}).then(r=>r.json());
-  if(r.error){alert(r.error);return;}
-  if(r.csv_content){
-    const blob=new Blob(['\uFEFF'+r.csv_content],{type:'text/csv;charset=utf-8'});
-    const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=r.filename;a.click();
+  const countEl=document.getElementById('e-count');
+  let count=parseInt(countEl.value);
+  if(isNaN(count)||count<=0){alert('Invalid count');return;}
+  if(count>5000){
+    const ok=confirm('单次上限 5000 条,当前填 '+count+'。\\n点击"确定"将截断到 5000,点击"取消"请重新填数。');
+    if(!ok){return;}
+    count=5000;
+    countEl.value=5000;
   }
-  alert('Exported '+r.exported+' emails\nFile: '+r.filename);
-  loadStats();
+  const origText=btn?btn.textContent:'';
+  if(btn){btn.disabled=true;btn.textContent='导出中...';}
+  try{
+    const r=await fetch(API+'/api/email/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user,count})}).then(r=>r.json());
+    if(r.error){alert(r.error);return;}
+    if(r.csv_content){
+      const blob=new Blob(['\uFEFF'+r.csv_content],{type:'text/csv;charset=utf-8'});
+      const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=r.filename;a.click();
+    }
+    // 显示 batch_id 供用户对账/补下
+    const bcid=r.batch_id||'(no-batch-id)';
+    alert('Exported '+r.exported+' emails\nFile: '+r.filename+'\nBatch: '+bcid+'\n\n若下载未完成,可按 Batch ID 重新下载');
+  }catch(e){
+    alert('Export failed: '+(e&&e.message||e));
+  }finally{
+    if(btn){btn.disabled=false;btn.textContent=origText;}
+    loadStats();
+  }
 }
 
 async function loadAll(){await loadStats();await loadDomainTable();}
