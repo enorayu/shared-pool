@@ -545,6 +545,74 @@ def domain_list():
     return jsonify({"domains": domains, "unique_total": unique_total, "total": total_for_page, "returned": len(domains)})
 
 
+@app.route("/api/domain/export-csv", methods=["GET"])
+def domain_export_csv():
+    """
+    只读导出域名池为 CSV，按 collection_status 过滤（Claimed / New）。
+    使用 domain_id 游标分页（服务端过滤），避免内存去重全表导致超时。
+    **不修改任何库数据**。
+    参数:
+      status  : Claimed | New （必填）
+      batch   : 每次循环拉取行数，默认 2000（<=2000）
+      maxrows : 上限，默认 0=不限制
+    返回: text/csv 流式内容
+    """
+    import io as _io
+    status = request.args.get("status", "").strip()
+    if status not in ("Claimed", "New"):
+        return jsonify({"error": "status must be Claimed or New"}), 400
+    batch = min(int(request.args.get("batch", 2000)), 2000)
+    maxrows = int(request.args.get("maxrows", 0))
+
+    cols = ["domain_id", "domain", "source", "collection_status",
+            "claimed_by", "claim_batch_id", "priority", "notes", "created_at"]
+    out = _io.StringIO()
+    writer = csv.writer(out)
+    writer.writerow(cols)
+
+    cursor = 0
+    fetched = 0
+    seen = set()
+    while True:
+        rows = db.select(
+            "domain_pool",
+            select=",".join(cols),
+            filters={"collection_status": status, "domain_id": f"gt.{cursor}"},
+            limit=batch,
+            order="domain_id",
+            ascending=True,
+        )
+        if not rows:
+            break
+        for r in rows:
+            did = r.get("domain_id")
+            if did is None:
+                continue
+            cursor = max(cursor, did)
+            dom = (r.get("domain") or "").strip().lower()
+            if dom and dom in seen:
+                continue
+            if dom:
+                seen.add(dom)
+            writer.writerow([
+                r.get("domain_id"), r.get("domain"), safe_str(r.get("source")),
+                r.get("collection_status"), safe_str(r.get("claimed_by")),
+                safe_str(r.get("claim_batch_id")), r.get("priority", 0),
+                safe_str(r.get("notes")), safe_str(r.get("created_at"))[:19] if r.get("created_at") else "",
+            ])
+            fetched += 1
+            if maxrows and fetched >= maxrows:
+                break
+        if maxrows and fetched >= maxrows:
+            break
+        if len(rows) < batch:
+            break
+
+    csv_body = out.getvalue()
+    return Response(csv_body, mimetype="text/csv",
+                    headers={"Content-Disposition": f"attachment; filename=domain_pool_{status}.csv"})
+
+
 @app.route("/api/domain/export", methods=["POST"])
 def domain_export():
     """
