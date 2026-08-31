@@ -547,37 +547,46 @@ def domain_list():
 def domain_export_csv():
     """
     只读导出域名池为 CSV，按 collection_status 过滤（Claimed / New）。
-    使用 domain_id 游标分页（服务端过滤），避免内存去重全表导致超时。
+    使用 domain_id 游标分页（服务端过滤），单页返回避免超时。
     **不修改任何库数据**。
     参数:
-      status  : Claimed | New （必填）
-      batch   : 每次循环拉取行数，默认 2000（<=2000）
-      maxrows : 上限，默认 0=不限制
-    返回: text/csv 流式内容
+      status   : Claimed | New （必填）
+      batch    : 每页行数，默认 2000（<=2000）
+      start_id : 游标起点（domain_id > start_id），默认 0
+    返回: text/csv 流式内容 + X-Last-Id 头（本页最大 domain_id）
     """
     import io as _io
     status = request.args.get("status", "").strip()
     if status not in ("Claimed", "New"):
         return jsonify({"error": "status must be Claimed or New"}), 400
     batch = min(int(request.args.get("batch", 2000)), 2000)
-    start_id = int(request.args.get("start_id", 0))  # client-side cursor resume
+    start_id = int(request.args.get("start_id", 0))
 
     cols = ["domain_id", "domain", "source", "collection_status",
             "claimed_by", "claim_batch_id", "priority", "notes", "created_at"]
+
+    # 直连 Supabase REST，自己拼过滤条件，绕开 db.select 的坑
+    params = {
+        "select": ",".join(cols),
+        "collection_status": f"eq.{status}",
+        "domain_id": f"gt.{start_id}",
+        "order": "domain_id.asc",
+        "limit": str(batch),
+    }
+    headers = {
+        "apikey": SUPABASE_ANON_KEY,
+        "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+        "Accept": "application/json",
+    }
+    try:
+        resp = requests.get(f"{REST_URL}/domain_pool", params=params, headers=headers, timeout=30)
+        rows = resp.json() if resp.status_code == 200 else []
+    except Exception:
+        rows = []
+
     out = _io.StringIO()
     writer = csv.writer(out)
     writer.writerow(cols)
-
-    # 单页模式：每次只返回一页（limit=batch），由客户端用 X-Last-Id 翻页。
-    # 避免服务端内部循环翻全表导致 Render 响应体被截断。
-    rows = db.select(
-        "domain_pool",
-        select=",".join(cols),
-        filters={"collection_status": status, "domain_id": f"gt.{start_id}"},
-        limit=batch,
-        order="domain_id",
-        ascending=True,
-    )
     last_id = start_id
     for r in rows:
         did = r.get("domain_id")
