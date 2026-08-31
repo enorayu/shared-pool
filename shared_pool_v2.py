@@ -560,7 +560,6 @@ def domain_export_csv():
     if status not in ("Claimed", "New"):
         return jsonify({"error": "status must be Claimed or New"}), 400
     batch = min(int(request.args.get("batch", 2000)), 2000)
-    maxrows = int(request.args.get("maxrows", 0))
     start_id = int(request.args.get("start_id", 0))  # client-side cursor resume
 
     cols = ["domain_id", "domain", "source", "collection_status",
@@ -569,49 +568,33 @@ def domain_export_csv():
     writer = csv.writer(out)
     writer.writerow(cols)
 
-    cursor = start_id
-    fetched = 0
-    seen = set()
-    while True:
-        rows = db.select(
-            "domain_pool",
-            select=",".join(cols),
-            filters={"collection_status": status, "domain_id": f"gt.{cursor}"},
-            limit=batch,
-            order="domain_id",
-            ascending=True,
-        )
-        if not rows:
-            break
-        for r in rows:
-            did = r.get("domain_id")
-            if did is None:
-                continue
-            cursor = max(cursor, did)
-            dom = (r.get("domain") or "").strip().lower()
-            if dom and dom in seen:
-                continue
-            if dom:
-                seen.add(dom)
-            writer.writerow([
-                r.get("domain_id"), r.get("domain"), safe_str(r.get("source")),
-                r.get("collection_status"), safe_str(r.get("claimed_by")),
-                safe_str(r.get("claim_batch_id")), r.get("priority", 0),
-                safe_str(r.get("notes")), safe_str(r.get("created_at"))[:19] if r.get("created_at") else "",
-            ])
-            fetched += 1
-            if maxrows and fetched >= maxrows:
-                break
-        if maxrows and fetched >= maxrows:
-            break
-        if len(rows) < batch:
-            break
+    # 单页模式：每次只返回一页（limit=batch），由客户端用 X-Last-Id 翻页。
+    # 避免服务端内部循环翻全表导致 Render 响应体被截断。
+    rows = db.select(
+        "domain_pool",
+        select=",".join(cols),
+        filters={"collection_status": status, "domain_id": f"gt.{start_id}"},
+        limit=batch,
+        order="domain_id",
+        ascending=True,
+    )
+    last_id = start_id
+    for r in rows:
+        did = r.get("domain_id")
+        if did is None:
+            continue
+        last_id = max(last_id, did)
+        writer.writerow([
+            r.get("domain_id"), r.get("domain"), safe_str(r.get("source")),
+            r.get("collection_status"), safe_str(r.get("claimed_by")),
+            safe_str(r.get("claim_batch_id")), r.get("priority", 0),
+            safe_str(r.get("notes")), safe_str(r.get("created_at"))[:19] if r.get("created_at") else "",
+        ])
 
     csv_body = out.getvalue()
-    # 末尾追加续传游标（客户端解析最后一行非表头即 max domain_id）
     return Response(csv_body, mimetype="text/csv",
                     headers={"Content-Disposition": f"attachment; filename=domain_pool_{status}.csv",
-                             "X-Last-Id": str(cursor)})
+                             "X-Last-Id": str(last_id)})
 
 
 @app.route("/api/domain/export", methods=["POST"])
