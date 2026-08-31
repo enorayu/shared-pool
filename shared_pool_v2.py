@@ -205,13 +205,11 @@ class SB:
 
         path = table
         if filters:
-            parts = []
             for k, v in filters.items():
                 part = self._filter_part(k, v)
                 if part:
-                    parts.append(part)
-            if parts:
-                path += "?" + "&".join(parts)
+                    fk, fv = part.split("=", 1)
+                    params[fk] = fv
 
         resp, data = self._req("GET", path, params=params)
         if isinstance(data, list):
