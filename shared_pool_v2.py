@@ -563,6 +563,7 @@ def domain_export_csv():
         return jsonify({"error": "status must be Claimed or New"}), 400
     batch = min(int(request.args.get("batch", 2000)), 2000)
     maxrows = int(request.args.get("maxrows", 0))
+    start_id = int(request.args.get("start_id", 0))  # client-side cursor resume
 
     cols = ["domain_id", "domain", "source", "collection_status",
             "claimed_by", "claim_batch_id", "priority", "notes", "created_at"]
@@ -570,7 +571,7 @@ def domain_export_csv():
     writer = csv.writer(out)
     writer.writerow(cols)
 
-    cursor = 0
+    cursor = start_id
     fetched = 0
     seen = set()
     while True:
@@ -609,8 +610,10 @@ def domain_export_csv():
             break
 
     csv_body = out.getvalue()
+    # 末尾追加续传游标（客户端解析最后一行非表头即 max domain_id）
     return Response(csv_body, mimetype="text/csv",
-                    headers={"Content-Disposition": f"attachment; filename=domain_pool_{status}.csv"})
+                    headers={"Content-Disposition": f"attachment; filename=domain_pool_{status}.csv",
+                             "X-Last-Id": str(cursor)})
 
 
 @app.route("/api/domain/export", methods=["POST"])
